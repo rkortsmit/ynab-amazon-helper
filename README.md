@@ -1,16 +1,18 @@
 # YNAB Amazon Helper
 
-Local-first tooling for reconciling Amazon credit card purchases in YNAB with help from Codex or another AI assistant.
+Local-first tooling for reconciling Amazon credit card purchases and refunds in YNAB with help from Codex or another AI assistant.
 
 ## What This Is
 
-Amazon credit card charges in YNAB are often hard to categorize because the bank transaction usually only shows `Amazon` plus an amount. This project does the repetitive work locally on your machine:
+Amazon credit card charges and refunds in YNAB are often hard to categorize because the bank transaction usually only shows `Amazon` plus an amount. This project does the repetitive work locally on your machine:
 
 - pulls pending YNAB transactions
 - pulls recent Amazon order history from your local browser sessions
 - learns from your past categorizations
 - builds a structured analysis bundle for an AI assistant
 - lets you apply only the decisions you explicitly trust
+- adds short YNAB memos for matched purchases when it can generate a useful description
+- uses Amazon's payments transaction history to improve split-charge and refund matching
 
 The scripts are the plumbing. The AI is the reasoning layer.
 
@@ -38,9 +40,10 @@ Important: if you use an external AI provider, only share the local files you ar
 ## How It Works
 
 1. You sync recent Amazon orders from one or more local browser profiles.
+   The sync now reads both Your Orders and Your Payments > Transactions so split charges and refunds have a better source of truth.
 2. You pull your YNAB history and learn from past categorized Amazon transactions.
 3. You generate a single AI-ready analysis file.
-4. Codex or another AI assistant reviews the file, proposes safe categorizations, and asks you only about uncertain cases.
+4. Codex or another AI assistant reviews the file, proposes safe categorizations for both charges and refunds, and asks you only about uncertain cases.
 5. Confirmed decisions can be remembered for future runs.
 6. You preview the exact YNAB changes before writing anything.
 7. You write back only when you are ready.
@@ -72,6 +75,8 @@ bun run start amazon sync --profile secondary --pages 5
 ```
 
 If Amazon asks for login, MFA, or a captcha, handle that manually in the opened browser window.
+This sync reads both order history and the payments transaction list, which helps with split captures, Subscribe & Save style charges, and refund detection.
+If older charges or refunds still show as unmatched, sync more history with a larger `--pages` value.
 
 ### 2. Learn From Past YNAB Decisions
 
@@ -97,7 +102,7 @@ Ask the AI to:
 
 - read `data/analysis-latest.json`
 - use `data/category-memory.json` as prior memory
-- auto-handle only high-confidence matches
+- auto-handle only high-confidence matches, including refunds when the original order/category is already known
 - ask you only about `needs_review` and `no_match`
 - avoid writing to YNAB until you explicitly confirm
 
@@ -122,6 +127,7 @@ bun run start apply
 ```
 
 This is a dry run. Review it before writing anything.
+When the helper can generate a short description and the existing YNAB memo is empty, the dry run also previews that memo.
 
 ### 7. Write Approved Changes Back To YNAB
 
@@ -130,6 +136,22 @@ bun run start apply --write
 ```
 
 Only run this after you have reviewed the decisions and are comfortable with the result.
+
+### 8. Backfill Memos For Already-Approved Amazon Transactions
+
+Preview memo backfill:
+
+```bash
+bun run start memo backfill --days 45
+```
+
+Write memo backfill:
+
+```bash
+bun run start memo backfill --days 45 --write
+```
+
+This is useful when a transaction is already categorized and approved in YNAB, but you still want a short memo description added afterward. It works for both Amazon charges and Amazon refunds when a good match is available.
 
 ## Using This With Codex
 
@@ -147,7 +169,7 @@ Example prompt:
 ```text
 Please help reconcile my Amazon transactions in YNAB.
 Read data/analysis-latest.json and data/category-memory.json.
-Auto-handle only high-confidence items.
+Auto-handle only high-confidence items, including refunds.
 Ask me only about anything uncertain or unmatched.
 Do not write to YNAB until I explicitly approve the final apply step.
 ```
@@ -181,11 +203,11 @@ If the AI cannot run local commands, you can still use this repo manually to gen
 
 If you are an AI assistant reading this repository, use this order of operations:
 
-1. Sync Amazon profiles when the user wants fresh order data.
+1. Sync Amazon profiles when the user wants fresh order and payments data.
 2. Run `bun run start learn --history-days 365` unless the user wants a narrower pass.
 3. Run `bun run start analyze --days 90 --history-days 365`.
 4. Read `data/analysis-latest.json`.
-5. Focus on `auto_apply`, `needs_review`, and `no_match`.
+5. Focus on `auto_apply`, `needs_review`, and `no_match`, including Amazon refunds.
 6. Ask the user only about uncertain or unmatched transactions.
 7. Save confirmed one-off decisions with `decide`.
 8. Save reusable memory with `remember` only when the user wants that pattern reused.
@@ -246,6 +268,7 @@ bun run start review --days 90 --only ambiguous
 
 - `profiles/`: persistent Playwright browser profiles used for Amazon sessions
 - `data/amazon-orders-*.json`: cached Amazon order history per profile
+- `data/amazon-payments-*.json`: cached Amazon payments transaction history per profile
 - `data/category-memory.json`: learned rules plus reusable manual memory
 - `data/analysis-latest.json`: latest AI-ready review bundle
 

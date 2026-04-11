@@ -43,6 +43,19 @@ export function parseMoneyToCents(value: string | null | undefined): number | nu
   return sign * (dollars * 100 + cents);
 }
 
+export function parseUsDateToIso(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = new Date(`${value} 12:00:00 UTC`);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed.toISOString().slice(0, 10);
+}
+
 export function uniq<T>(items: T[]): T[] {
   return [...new Set(items)];
 }

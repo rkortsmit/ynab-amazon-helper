@@ -54,6 +54,21 @@ export type AmazonOrder = {
   scrapedAt: string;
 };
 
+export type AmazonPaymentTransaction = {
+  profile: string;
+  marketplace: string;
+  transactionDate: string | null;
+  transactionStatus: "completed" | "in_progress" | "pending" | "unknown";
+  paymentInstrument: string | null;
+  paymentLast4: string | null;
+  amountCents: number;
+  orderNumber: string | null;
+  merchant: string | null;
+  kind: "charge" | "refund" | "other";
+  rawPreview: string;
+  scrapedAt: string;
+};
+
 export type AmazonOrderCache = {
   version: 1;
   profile: string;
@@ -62,11 +77,19 @@ export type AmazonOrderCache = {
   orders: AmazonOrder[];
 };
 
+export type AmazonPaymentTransactionCache = {
+  version: 1;
+  profile: string;
+  marketplace: string;
+  updatedAt: string;
+  transactions: AmazonPaymentTransaction[];
+};
+
 export type MatchCandidate = {
   order: AmazonOrder;
   score: number;
   confidence: "strong" | "medium" | "weak";
-  amountSource: "charge" | "order_total";
+  amountSource: "payment_transaction" | "charge" | "order_total";
   dayDelta: number | null;
   reasons: string[];
 };
@@ -145,6 +168,7 @@ export type SuggestionEvidence = {
     | "override_contains_title"
     | "override_exact_item"
     | "override_exact_fingerprint"
+    | "history_exact_order_number"
     | "learned_exact_item"
     | "learned_exact_fingerprint";
   detail: string;
@@ -163,8 +187,10 @@ export type AnalysisDecisionStatus = "auto_apply" | "needs_review" | "no_match";
 export type AnalysisTransaction = {
   transactionId: string;
   transactionDate: string;
+  signedAmountCents: number;
   amountCents: number;
   payee: string;
+  memo: string | null;
   bestMatch: MatchCandidate | null;
   ambiguous: boolean;
   suggestions: CategorySuggestion[];

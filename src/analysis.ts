@@ -146,6 +146,52 @@ function applyLearnedItemRules(
   }
 }
 
+function applyHistoryOrderNumberRule(
+  suggestions: Map<string, CategorySuggestion>,
+  memory: MemoryStore,
+  orderNumber: string | null,
+): void {
+  if (!orderNumber) {
+    return;
+  }
+
+  const matchingExamples = memory.historyExamples.filter((example) => example.orderNumber === orderNumber);
+  if (matchingExamples.length === 0) {
+    return;
+  }
+
+  const byCategory = new Map<
+    string,
+    {
+      categoryId: string;
+      categoryName: string;
+      count: number;
+    }
+  >();
+
+  for (const example of matchingExamples) {
+    const existing = byCategory.get(example.categoryId);
+    if (existing) {
+      existing.count += 1;
+      continue;
+    }
+
+    byCategory.set(example.categoryId, {
+      categoryId: example.categoryId,
+      categoryName: example.categoryName,
+      count: 1,
+    });
+  }
+
+  for (const category of byCategory.values()) {
+    addSuggestion(suggestions, category.categoryId, category.categoryName, {
+      type: "history_exact_order_number",
+      detail: `order ${orderNumber} previously categorized ${category.count} time(s) as ${category.categoryName}`,
+      score: 520 + category.count * 25,
+    });
+  }
+}
+
 function sortSuggestions(
   suggestions: Map<string, CategorySuggestion>,
   categoryById: Map<string, YnabCategory>,
@@ -196,6 +242,9 @@ function decideAction(match: TransactionMatch, suggestions: CategorySuggestion[]
   const second = suggestions[1];
   const gap = top.score - (second?.score ?? 0);
   const hasManualOverride = top.evidences.some((evidence) => evidence.type.startsWith("override_"));
+  const hasExactOrderHistory = top.evidences.some(
+    (evidence) => evidence.type === "history_exact_order_number" && evidence.score >= 520,
+  );
   const hasStrongFingerprintHistory = top.evidences.some(
     (evidence) => evidence.type === "learned_exact_fingerprint" && evidence.score >= 320,
   );
@@ -211,7 +260,10 @@ function decideAction(match: TransactionMatch, suggestions: CategorySuggestion[]
   const autoApply =
     matchReliable &&
     gap >= 140 &&
-    (hasManualOverride || hasStrongFingerprintHistory || (multipleSupportingEvidences && top.score >= 420));
+    (hasManualOverride ||
+      hasExactOrderHistory ||
+      hasStrongFingerprintHistory ||
+      (multipleSupportingEvidences && top.score >= 420));
 
   return {
     status: autoApply ? "auto_apply" : "needs_review",
@@ -240,6 +292,7 @@ export function buildAnalysisBundle(input: {
 
     if (match.best) {
       applyOverrides(suggestionsMap, input.memory, normalizedItems, fingerprint);
+      applyHistoryOrderNumberRule(suggestionsMap, input.memory, match.best.order.orderNumber);
       applyLearnedFingerprintRule(suggestionsMap, input.memory, fingerprint);
       applyLearnedItemRules(suggestionsMap, input.memory, normalizedItems);
     }
@@ -250,8 +303,10 @@ export function buildAnalysisBundle(input: {
     return {
       transactionId: match.transaction.id,
       transactionDate: match.transaction.date,
+      signedAmountCents: match.transaction.amountCents,
       amountCents: Math.abs(match.transaction.amountCents),
       payee: transactionPayee(match),
+      memo: match.transaction.memo ?? null,
       bestMatch: match.best,
       ambiguous: match.ambiguous,
       suggestions,

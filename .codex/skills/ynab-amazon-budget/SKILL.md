@@ -1,6 +1,6 @@
 ---
 name: ynab-amazon-budget
-description: Use when the user wants help reconciling Amazon purchases in YNAB with this repository's local helper by syncing Amazon order history, learning from past categorizations, generating an analysis bundle, asking only about uncertain transactions, and optionally applying approved updates back to YNAB.
+description: Use when the user wants help reconciling Amazon purchases and refunds in YNAB with this repository's local helper by syncing Amazon order history and payments transactions, learning from past categorizations, generating an analysis bundle, asking only about uncertain transactions, and optionally applying approved updates back to YNAB.
 ---
 
 # YNAB Amazon Budget
@@ -12,6 +12,8 @@ Use this skill from the `ynab-amazon-helper` repository root.
 1. Refresh Amazon order data when needed:
    - `bun run start amazon sync --profile primary --pages 5`
    - `bun run start amazon sync --profile secondary --pages 5`
+   - This sync reads both Your Orders and Your Payments > Transactions so split charges and refunds can match more reliably.
+   - If older charges or refunds still show as unmatched, re-run sync with a larger `--pages` value.
 2. Learn from prior categorized YNAB history:
    - `bun run start learn --history-days 365`
 3. Generate the current analysis bundle:
@@ -20,6 +22,7 @@ Use this skill from the `ynab-amazon-helper` repository root.
    - `auto_apply`
    - `needs_review`
    - `no_match`
+   - This may include both Amazon charges and Amazon refunds.
 5. Ask the user only about uncertain or unmatched transactions.
 6. Save confirmed one-off choices:
    - `bun run start decide --transaction-id <id> --category "<name-or-id>"`
@@ -29,11 +32,15 @@ Use this skill from the `ynab-amazon-helper` repository root.
    - `bun run start apply`
 9. Only after explicit user confirmation, write updates:
    - `bun run start apply --write`
+10. If approved transactions are already in YNAB but their memos are blank, backfill them:
+   - `bun run start memo backfill --days 45`
+   - `bun run start memo backfill --days 45 --write`
 
 ## Guardrails
 
 - Treat the scripts as local plumbing and the AI as the reasoning layer.
 - Prefer `analyze` over the older `match` output when the user wants intelligent help.
+- Prefer exact payments-page matches for refunds and split captures when available.
 - Do not run `apply --write` without explicit user confirmation in the current conversation.
 - Use `remember` only after the user confirms the categorization should become a reusable rule.
 - If Amazon sessions have expired, let the user complete sign-in, MFA, and captchas manually in the headed browser.

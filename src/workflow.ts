@@ -2,9 +2,9 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildAnalysisBundle } from "./analysis.ts";
 import type { AppConfig } from "./config.ts";
-import { readAllOrders } from "./cache.ts";
+import { readAllOrders, readAllPaymentTransactions } from "./cache.ts";
 import { buildMemoryStore, readMemory, writeMemory } from "./memory.ts";
-import { matchTransactions } from "./match.ts";
+import { isAmazonishTransaction, matchTransactions } from "./match.ts";
 import type { AnalysisBundle, MemoryStore, TransactionMatch, YnabAccount, YnabCategory } from "./types.ts";
 import { YnabClient, resolveAccount } from "./ynab.ts";
 import { addDays } from "./utils.ts";
@@ -57,10 +57,12 @@ export async function loadPendingMatchContext(config: AppConfig, options: Workfl
       transaction.accountId === account.id &&
       !transaction.deleted &&
       !transaction.approved &&
-      transaction.amountCents < 0,
+      transaction.amountCents !== 0 &&
+      isAmazonishTransaction(transaction),
   );
   const orders = await readAllOrders(config);
-  const matches = matchTransactions(accountTransactions, orders);
+  const paymentTransactions = await readAllPaymentTransactions(config);
+  const matches = matchTransactions(accountTransactions, orders, paymentTransactions);
   const categories = await client.listCategories(planId);
 
   return {
@@ -83,13 +85,15 @@ export async function learnMemoryFromHistory(
   const categorizedHistory = historyTransactions.filter(
     (transaction) =>
       !transaction.deleted &&
-      transaction.amountCents < 0 &&
       transaction.approved &&
+      transaction.amountCents !== 0 &&
       Boolean(transaction.categoryId) &&
-      Boolean(transaction.categoryName),
+      Boolean(transaction.categoryName) &&
+      isAmazonishTransaction(transaction),
   );
   const orders = await readAllOrders(config);
-  const historyMatches = matchTransactions(categorizedHistory, orders);
+  const paymentTransactions = await readAllPaymentTransactions(config);
+  const historyMatches = matchTransactions(categorizedHistory, orders, paymentTransactions);
   const existingMemory = await readMemory(config);
   const memory = buildMemoryStore({
     historyMatches,

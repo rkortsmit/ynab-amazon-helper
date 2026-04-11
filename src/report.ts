@@ -31,7 +31,7 @@ export function printMatchReport(matches: TransactionMatch[]): void {
   }
 
   for (const match of matches) {
-    const amount = centsToCurrency(Math.abs(match.transaction.amountCents));
+    const amount = `${match.transaction.amountCents > 0 ? "+" : ""}${centsToCurrency(match.transaction.amountCents)}`;
     const payee = getTransactionPayee(match);
     console.log("");
     console.log(`${match.transaction.date}  ${amount}  ${payee}`);

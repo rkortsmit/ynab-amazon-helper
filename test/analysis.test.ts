@@ -157,4 +157,54 @@ describe("buildAnalysisBundle", () => {
     expect(bundle.transactions[0]?.decision.status).toBe("auto_apply");
     expect(bundle.transactions[0]?.decision.proposedCategoryName).toBe("Groceries");
   });
+
+  test("auto applies refunds when the order number was already categorized", () => {
+    const refundTransaction: YnabTransaction = {
+      ...baseTransaction,
+      id: "txn-refund",
+      amountMilliunits: 54190,
+      amountCents: 5419,
+    };
+
+    const refundCandidate: MatchCandidate = {
+      ...baseCandidate,
+      amountSource: "payment_transaction",
+      reasons: ["exact payments-page refund match", "order 111-2222222-3333333"],
+    };
+
+    const bundle = buildAnalysisBundle({
+      account,
+      categories,
+      memory: {
+        ...buildMemory(1, 1),
+        historyExamples: [
+          {
+            transactionId: "txn-original",
+            transactionDate: "2026-04-01",
+            amountCents: 5419,
+            categoryId: "cat-grocery",
+            categoryName: "Groceries",
+            matchConfidence: "strong",
+            orderNumber: "111-2222222-3333333",
+            profile: "secondary",
+            fingerprint: "carnation breakfast essentials high protein with fiber ready to drink",
+            itemTitles: ["Carnation Breakfast Essentials High Protein with Fiber Ready-to-Drink"],
+          },
+        ],
+      },
+      matches: [
+        {
+          transaction: refundTransaction,
+          candidates: [refundCandidate],
+          best: refundCandidate,
+          ambiguous: false,
+        },
+      ],
+      pendingSinceDate: "2026-01-01",
+    });
+
+    expect(bundle.summary.autoApply).toBe(1);
+    expect(bundle.transactions[0]?.decision.status).toBe("auto_apply");
+    expect(bundle.transactions[0]?.decision.proposedCategoryName).toBe("Groceries");
+  });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { matchTransactions } from "../src/match.ts";
-import type { AmazonOrder, YnabTransaction } from "../src/types.ts";
+import type { AmazonOrder, AmazonPaymentTransaction, YnabTransaction } from "../src/types.ts";
 
 const transaction: YnabTransaction = {
   id: "txn-1",
@@ -31,6 +31,24 @@ function order(overrides: Partial<AmazonOrder>): AmazonOrder {
     chargeAmountsCents: [],
     itemTitles: ["USB-C Cable"],
     paymentLast4: ["1234"],
+    rawPreview: "preview",
+    scrapedAt: "2026-04-10T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function payment(overrides: Partial<AmazonPaymentTransaction>): AmazonPaymentTransaction {
+  return {
+    profile: "you",
+    marketplace: "https://www.amazon.com",
+    transactionDate: "2026-04-09",
+    transactionStatus: "completed",
+    paymentInstrument: "Prime Visa ****1234",
+    paymentLast4: "1234",
+    amountCents: -2379,
+    orderNumber: "111-2222222-3333333",
+    merchant: "AMZN Mktp US",
+    kind: "charge",
     rawPreview: "preview",
     scrapedAt: "2026-04-10T00:00:00.000Z",
     ...overrides,
@@ -76,5 +94,50 @@ describe("matchTransactions", () => {
     const [result] = matchTransactions([transaction], [first, second]);
     expect(result.best).not.toBeNull();
     expect(result.ambiguous).toBe(true);
+  });
+
+  test("prefers exact payments-page matches over order totals", () => {
+    const totalOnly = order({
+      detailUrl: "https://www.amazon.com/order/total",
+      orderNumber: "222-3333333-4444444",
+      chargeAmountsCents: [],
+      orderTotalCents: 2379,
+      orderDate: "2026-04-01",
+    });
+
+    const exactPayment = payment({
+      orderNumber: "222-3333333-4444444",
+      transactionDate: "2026-04-09",
+      amountCents: -2379,
+    });
+
+    const [result] = matchTransactions([transaction], [totalOnly], [exactPayment]);
+    expect(result.best?.amountSource).toBe("payment_transaction");
+    expect(result.best?.order.orderNumber).toBe("222-3333333-4444444");
+    expect(result.ambiguous).toBe(false);
+  });
+
+  test("matches refund inflows against payments-page refunds", () => {
+    const refundTransaction: YnabTransaction = {
+      ...transaction,
+      id: "txn-refund",
+      amountMilliunits: 26690,
+      amountCents: 2669,
+      payeeName: "Amazon",
+      importPayeeName: "AMAZON MKTPLACE PMTS",
+      importPayeeNameOriginal: "AMAZON MKTPLACE PMTS",
+    };
+
+    const refundPayment = payment({
+      amountCents: 2669,
+      kind: "refund",
+      transactionDate: "2026-04-09",
+      orderNumber: "555-6666666-7777777",
+    });
+
+    const [result] = matchTransactions([refundTransaction], [], [refundPayment]);
+    expect(result.best?.amountSource).toBe("payment_transaction");
+    expect(result.best?.order.orderNumber).toBe("555-6666666-7777777");
+    expect(result.best?.reasons[0]).toContain("refund");
   });
 });

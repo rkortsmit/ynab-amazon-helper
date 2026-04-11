@@ -1,7 +1,14 @@
 import { loadConfig } from "./config.ts";
-import { writeProfileOrders } from "./cache.ts";
-import { syncAmazonOrders } from "./amazon.ts";
+import {
+  readAllOrders,
+  readAllPaymentTransactions,
+  writeProfileOrders,
+  writeProfilePaymentTransactions,
+} from "./cache.ts";
+import { syncAmazonOrders, syncAmazonPaymentTransactions } from "./amazon.ts";
 import { addOverrideRule, fingerprintOrder } from "./memory.ts";
+import { generateMemoFromMatch } from "./memo.ts";
+import { isAmazonishTransaction, matchTransactions } from "./match.ts";
 import { printMatchReport, printMatchesAsJson } from "./report.ts";
 import { reviewMatchesInteractive, type ReviewFilter } from "./review.ts";
 import {
@@ -12,14 +19,19 @@ import {
   readAnalysisBundle,
   writeAnalysisBundle,
 } from "./workflow.ts";
-import { YnabClient } from "./ynab.ts";
-import { normalizeText } from "./utils.ts";
+import { resolveAccount, YnabClient } from "./ynab.ts";
+import { addDays, normalizeText } from "./utils.ts";
 import type { AnalysisBundle, YnabCategory } from "./types.ts";
 
 type ParsedArgs = {
   positionals: string[];
   options: Record<string, string | boolean>;
 };
+
+function formatSignedCents(cents: number): string {
+  const sign = cents > 0 ? "+" : cents < 0 ? "-" : "";
+  return `${sign}$${(Math.abs(cents) / 100).toFixed(2)}`;
+}
 
 function parseArgs(argv: string[]): ParsedArgs {
   const positionals: string[] = [];
@@ -74,6 +86,7 @@ function printHelp(): void {
   bun run start decide --transaction-id <id> --category <name-or-id> [--file data/analysis-latest.json]
   bun run start remember --transaction-id <id> --category <name-or-id> --scope item|fingerprint|both [--file data/analysis-latest.json]
   bun run start apply [--file data/analysis-latest.json] [--write]
+  bun run start memo backfill [--days 45] [--write] [--overwrite]
 
 Environment:
   YNAB_ACCESS_TOKEN   required for YNAB commands
@@ -81,6 +94,10 @@ Environment:
   YNAB_ACCOUNT_NAME   recommended, e.g. "Amazon Card"
   YNAB_ACCOUNT_ID     optional exact override
   AMAZON_MARKETPLACE  defaults to https://www.amazon.com
+
+Notes:
+  amazon sync refreshes both order history and Your Payments > Transactions.
+  apply writes categories/approval and fills an empty memo when a short memo can be generated.
 `);
 }
 
@@ -171,14 +188,17 @@ async function run(): Promise<void> {
 
     const pages = readNumberOption(args.options, "pages", 5);
     const marketplace = readStringOption(args.options, "marketplace") ?? config.defaultMarketplace;
-    const scrapedOrders = await syncAmazonOrders(config, {
+    const syncOptions = {
       profile,
       pages,
       marketplace,
-    });
+    };
+    const scrapedOrders = await syncAmazonOrders(config, syncOptions);
+    const scrapedPaymentTransactions = await syncAmazonPaymentTransactions(config, syncOptions);
     const summary = await writeProfileOrders(config, profile, marketplace, scrapedOrders);
+    const paymentSummary = await writeProfilePaymentTransactions(config, profile, marketplace, scrapedPaymentTransactions);
     console.log(
-      `Saved ${scrapedOrders.length} scraped orders for ${profile}. Cache now has ${summary.total} orders (${summary.added} new, ${summary.updated} updated).`,
+      `Saved ${scrapedOrders.length} scraped orders and ${scrapedPaymentTransactions.length} payment transactions for ${profile}. Orders cache: ${summary.total} total (${summary.added} new, ${summary.updated} updated). Payments cache: ${paymentSummary.total} total (${paymentSummary.added} new, ${paymentSummary.updated} updated).`,
     );
     return;
   }
@@ -337,6 +357,11 @@ async function run(): Promise<void> {
       .map((transaction) => {
         const categoryId = transaction.decision.selectedCategoryId ?? transaction.decision.proposedCategoryId;
         const categoryName = transaction.decision.selectedCategoryName ?? transaction.decision.proposedCategoryName;
+        const signedAmountCents = transaction.signedAmountCents ?? transaction.amountCents;
+        const generatedMemo = generateMemoFromMatch(transaction.bestMatch, {
+          refund: signedAmountCents > 0,
+        });
+        const memo = (transaction.memo ?? "").trim() ? transaction.memo : generatedMemo;
         const eligible =
           Boolean(categoryId) &&
           (transaction.decision.status === "auto_apply" || Boolean(transaction.decision.selectedCategoryId));
@@ -345,6 +370,8 @@ async function run(): Promise<void> {
           transaction,
           categoryId,
           categoryName,
+          signedAmountCents,
+          memo,
           eligible,
         };
       })
@@ -360,7 +387,7 @@ async function run(): Promise<void> {
 
     for (const item of applicable) {
       console.log(
-        `${item.transaction.transactionDate}  $${(item.transaction.amountCents / 100).toFixed(2)}  ${item.transaction.payee}  ->  ${item.categoryName}`,
+        `${item.transaction.transactionDate}  ${formatSignedCents(item.signedAmountCents)}  ${item.transaction.payee}  ->  ${item.categoryName}${item.memo ? `  [memo: ${item.memo}]` : ""}`,
       );
     }
 
@@ -374,10 +401,73 @@ async function run(): Promise<void> {
       await client.updateTransaction(planId, item.transaction.transactionId, {
         categoryId: item.categoryId,
         approved: item.transaction.decision.shouldApprove,
+        memo: item.memo ?? undefined,
       });
     }
 
     console.log("YNAB transactions updated successfully.");
+    return;
+  }
+
+  if (group === "memo" && command === "backfill") {
+    const write = args.options.write === true;
+    const overwrite = args.options.overwrite === true;
+    const client = new YnabClient(config);
+    const planId = workflowOptions.planId ?? config.defaultPlanId;
+    const account = await resolveAccount(client, planId, workflowOptions.accountId, workflowOptions.accountName);
+    const sinceDate = addDays(new Date().toISOString().slice(0, 10), -readNumberOption(args.options, "days", 45));
+    const transactions = await client.getAccountTransactions(planId, account.id, sinceDate);
+    const candidates = transactions.filter((transaction) => {
+      if (transaction.deleted || !transaction.approved || transaction.amountCents === 0) {
+        return false;
+      }
+
+      if (!overwrite && (transaction.memo ?? "").trim()) {
+        return false;
+      }
+
+      return isAmazonishTransaction(transaction);
+    });
+
+    const orders = await readAllOrders(config);
+    const paymentTransactions = await readAllPaymentTransactions(config);
+    const matches = matchTransactions(candidates, orders, paymentTransactions);
+    const applicable = matches
+      .map((match) => ({
+        match,
+        memo: generateMemoFromMatch(match.best, {
+          refund: match.transaction.amountCents > 0,
+        }),
+      }))
+      .filter((item) => item.match.best && item.memo);
+
+    if (applicable.length === 0) {
+      console.log("No approved Amazon transactions are eligible for memo backfill.");
+      return;
+    }
+
+    console.log(`Account: ${account.name}`);
+    console.log(`Transactions eligible for memo backfill: ${applicable.length}`);
+
+    for (const item of applicable) {
+      console.log(
+        `${item.match.transaction.date}  ${formatSignedCents(item.match.transaction.amountCents)}  ${item.match.transaction.importPayeeNameOriginal ?? item.match.transaction.payeeName ?? "(no payee)"}  ->  ${item.memo}`,
+      );
+    }
+
+    if (!write) {
+      console.log("");
+      console.log("Dry run only. Re-run with --write to update YNAB memos.");
+      return;
+    }
+
+    for (const item of applicable) {
+      await client.updateTransaction(planId, item.match.transaction.id, {
+        memo: item.memo,
+      });
+    }
+
+    console.log("YNAB memos updated successfully.");
     return;
   }
 

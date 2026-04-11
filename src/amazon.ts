@@ -3,8 +3,8 @@ import { stdin as input, stdout as output } from "node:process";
 import { join } from "node:path";
 import { chromium, type Page } from "playwright";
 import type { AppConfig } from "./config.ts";
-import type { AmazonOrder } from "./types.ts";
-import { ensureDir } from "./utils.ts";
+import type { AmazonOrder, AmazonPaymentTransaction } from "./types.ts";
+import { ensureDir, parseMoneyToCents, parseUsDateToIso } from "./utils.ts";
 
 type SyncOptions = {
   profile: string;
@@ -34,6 +34,10 @@ async function waitForEnter(message: string): Promise<void> {
 
 function orderHistoryUrl(marketplace: string): string {
   return new URL("/gp/css/order-history", marketplace).toString();
+}
+
+function paymentsTransactionsUrl(marketplace: string): string {
+  return new URL("/cpe/yourpayments/transactions", marketplace).toString();
 }
 
 async function pageText(page: Page): Promise<string> {
@@ -85,6 +89,45 @@ async function ensureOrderHistoryPage(page: Page, marketplace: string): Promise<
   }
 
   throw new Error("Unable to confirm the Amazon order-history page after several attempts.");
+}
+
+async function ensurePaymentsTransactionsPage(page: Page, marketplace: string): Promise<void> {
+  const targetUrl = paymentsTransactionsUrl(marketplace);
+
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const currentText = await pageText(page);
+    const currentUrl = page.url();
+
+    if (/your account .* your payments .* transactions/i.test(currentText.replace(/\n+/g, " ")) || /transactions/i.test(currentText)) {
+      return;
+    }
+
+    if (/sign in/i.test(currentText) || currentUrl.includes("/ap/signin")) {
+      await waitForManualFix(
+        page,
+        "Amazon needs you to sign in before the payments transaction page can be read. MFA and captchas stay fully manual.",
+        targetUrl,
+      );
+      continue;
+    }
+
+    if (/characters you see below|enter the characters you see/i.test(currentText) || currentUrl.includes("validateCaptcha")) {
+      await waitForManualFix(
+        page,
+        "Amazon is showing a captcha on the payments transaction page. Solve it in the browser, then come back here.",
+        targetUrl,
+      );
+      continue;
+    }
+
+    await waitForManualFix(
+      page,
+      "The payments transaction page was not detected automatically. In the browser, navigate to Your Payments > Transactions, then come back here.",
+      targetUrl,
+    );
+  }
+
+  throw new Error("Unable to confirm the Amazon payments transaction page after several attempts.");
 }
 
 async function collectOrderDetailLinks(page: Page, pages: number): Promise<string[]> {
@@ -142,6 +185,165 @@ async function collectOrderDetailLinks(page: Page, pages: number): Promise<strin
   }
 
   return [...found];
+}
+
+function findNextPageHref(page: Page): Promise<string | null> {
+  return page.evaluate(() => {
+    const candidates = Array.from(document.querySelectorAll<HTMLAnchorElement>("a"));
+    for (const candidate of candidates) {
+      const text = candidate.textContent?.trim() ?? "";
+      if (candidate.href && /^next page$/i.test(text)) {
+        return candidate.href;
+      }
+    }
+
+    for (const candidate of candidates) {
+      const text = candidate.textContent?.trim() ?? "";
+      if (candidate.href && /next/i.test(text)) {
+        return candidate.href;
+      }
+    }
+
+    return null;
+  });
+}
+
+export function parsePaymentsTransactionsText(input: {
+  profile: string;
+  marketplace: string;
+  text: string;
+  scrapedAt?: string;
+}): AmazonPaymentTransaction[] {
+  const lines = input.text
+    .replace(/\u00a0/g, " ")
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const transactions: AmazonPaymentTransaction[] = [];
+  let currentSection: AmazonPaymentTransaction["transactionStatus"] = "unknown";
+  let currentDate: string | null = null;
+  const seen = new Set<string>();
+
+  function isDateHeading(value: string): boolean {
+    return /^[A-Z][a-z]+ \d{1,2}, \d{4}$/.test(value);
+  }
+
+  function isAmountLine(value: string): boolean {
+    return /^[+-]?\$[\d,]+\.\d{2}$/.test(value);
+  }
+
+  function isPaymentInstrument(value: string): boolean {
+    return !isDateHeading(value) && !isAmountLine(value) && value.length <= 80;
+  }
+
+  function extractOrderNumber(value: string): string | null {
+    const match =
+      value.match(/(?:Refund:\s*)?Order #([A-Z0-9-]{10,})/i) ??
+      value.match(/^([A-Z0-9]{3}-\d{7}-\d{7})$/);
+    return match?.[1] ?? null;
+  }
+
+  function shouldStop(value: string): boolean {
+    return (
+      /^previous page$/i.test(value) ||
+      /^back to top$/i.test(value) ||
+      /^get to know us$/i.test(value) ||
+      /^amazon music$/i.test(value)
+    );
+  }
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+
+    if (shouldStop(line)) {
+      break;
+    }
+
+    if (/^completed$/i.test(line)) {
+      currentSection = "completed";
+      continue;
+    }
+
+    if (/^in progress$/i.test(line)) {
+      currentSection = "in_progress";
+      continue;
+    }
+
+    if (isDateHeading(line)) {
+      currentDate = parseUsDateToIso(line);
+      continue;
+    }
+
+    if (!currentDate || !isPaymentInstrument(line) || !isAmountLine(lines[index + 1] ?? "")) {
+      continue;
+    }
+
+    const amountCents = parseMoneyToCents(lines[index + 1]);
+    if (amountCents === null) {
+      continue;
+    }
+
+    let cursor = index + 2;
+    let transactionStatus: AmazonPaymentTransaction["transactionStatus"] = currentSection;
+
+    if (/^pending$/i.test(lines[cursor] ?? "")) {
+      transactionStatus = "pending";
+      cursor += 1;
+    }
+
+    let orderNumber: string | null = null;
+    while (cursor < lines.length) {
+      const candidate = extractOrderNumber(lines[cursor] ?? "");
+      if (!candidate) {
+        break;
+      }
+
+      orderNumber = candidate;
+      cursor += 1;
+    }
+
+    let merchant: string | null = lines[cursor] ?? null;
+    if (
+      !merchant ||
+      isDateHeading(merchant) ||
+      /^completed$/i.test(merchant) ||
+      /^in progress$/i.test(merchant) ||
+      shouldStop(merchant) ||
+      isAmountLine(merchant)
+    ) {
+      merchant = null;
+      cursor -= 1;
+    }
+
+    const paymentLast4 = line.match(/(\d{4})(?!.*\d)/)?.[1] ?? null;
+    const kind: AmazonPaymentTransaction["kind"] =
+      amountCents > 0 || /^refund:/i.test(lines[index + 2] ?? "") ? "refund" : amountCents < 0 ? "charge" : "other";
+    const rawPreview = lines.slice(index, Math.min(lines.length, cursor + 2)).join(" | ").slice(0, 400);
+    const key = [currentDate, amountCents, orderNumber ?? "", line, merchant ?? "", transactionStatus].join("::");
+
+    if (!seen.has(key)) {
+      seen.add(key);
+      transactions.push({
+        profile: input.profile,
+        marketplace: input.marketplace,
+        transactionDate: currentDate,
+        transactionStatus,
+        paymentInstrument: line,
+        paymentLast4,
+        amountCents,
+        orderNumber,
+        merchant,
+        kind,
+        rawPreview,
+        scrapedAt: input.scrapedAt ?? new Date().toISOString(),
+      });
+    }
+
+    index = Math.max(index, cursor);
+  }
+
+  return transactions;
 }
 
 async function scrapeOrder(page: Page, detailUrl: string, profile: string, marketplace: string): Promise<AmazonOrder> {
@@ -372,6 +574,53 @@ export async function syncAmazonOrders(config: AppConfig, options: SyncOptions):
     }
 
     return orders;
+  } finally {
+    await context.close();
+  }
+}
+
+export async function syncAmazonPaymentTransactions(
+  config: AppConfig,
+  options: SyncOptions,
+): Promise<AmazonPaymentTransaction[]> {
+  const userDataDir = join(config.profilesDir, options.profile);
+  await ensureDir(userDataDir);
+
+  const context = await chromium.launchPersistentContext(userDataDir, {
+    headless: false,
+    viewport: { width: 1440, height: 980 },
+  });
+
+  try {
+    const page = context.pages()[0] ?? (await context.newPage());
+    await page.goto(paymentsTransactionsUrl(options.marketplace), { waitUntil: "domcontentloaded" });
+    await ensurePaymentsTransactionsPage(page, options.marketplace);
+
+    const transactions: AmazonPaymentTransaction[] = [];
+
+    for (let index = 0; index < options.pages; index += 1) {
+      await page.waitForLoadState("domcontentloaded");
+      await page.waitForTimeout(1_500);
+      const text = await pageText(page);
+      const scrapedAt = new Date().toISOString();
+      transactions.push(
+        ...parsePaymentsTransactionsText({
+          profile: options.profile,
+          marketplace: options.marketplace,
+          text,
+          scrapedAt,
+        }),
+      );
+
+      const nextHref = await findNextPageHref(page);
+      if (!nextHref || index === options.pages - 1) {
+        break;
+      }
+
+      await page.goto(nextHref, { waitUntil: "domcontentloaded" });
+    }
+
+    return transactions;
   } finally {
     await context.close();
   }
