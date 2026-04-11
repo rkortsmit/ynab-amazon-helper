@@ -1,6 +1,6 @@
 # YNAB Amazon Helper
 
-Local-only helper for matching unapproved YNAB Amazon Visa transactions with your Amazon order history.
+Local-only helper for matching unapproved YNAB Amazon credit card transactions with your Amazon order history.
 
 ## Safety model
 
@@ -12,7 +12,7 @@ Local-only helper for matching unapproved YNAB Amazon Visa transactions with you
 
 ## Setup
 
-1. `cd /home/steven/code/personal/ynab-amazon-helper`
+1. Clone the repo and `cd ynab-amazon-helper`
 2. `cp .env.example .env`
 3. Add your `YNAB_ACCESS_TOKEN` and `YNAB_ACCOUNT_NAME` to `.env`
 4. `bun install`
@@ -38,19 +38,19 @@ List YNAB categories:
 bun run start ynab categories
 ```
 
-Sync orders for your Amazon account:
+Sync orders for your primary Amazon account:
 
 ```bash
-bun run start amazon sync --profile you --pages 5
+bun run start amazon sync --profile primary --pages 5
 ```
 
-Sync orders for your wife's Amazon account:
+Sync orders for a second Amazon account:
 
 ```bash
-bun run start amazon sync --profile wife --pages 5
+bun run start amazon sync --profile secondary --pages 5
 ```
 
-Match unapproved transactions from your Amazon Visa account against the cached orders:
+Match unapproved transactions from your Amazon card account against the cached orders:
 
 ```bash
 bun run start match --days 90
@@ -80,7 +80,7 @@ Review only ambiguous transactions:
 bun run start review --days 90 --only ambiguous
 ```
 
-Learn from your categorized Amazon Visa history:
+Learn from your categorized Amazon card history:
 
 ```bash
 bun run start learn --history-days 365

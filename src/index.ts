@@ -66,7 +66,7 @@ function printHelp(): void {
   bun run start ynab plans
   bun run start ynab accounts [--plan-id last-used]
   bun run start ynab categories [--plan-id last-used]
-  bun run start amazon sync --profile you [--pages 5]
+  bun run start amazon sync --profile primary [--pages 5]
   bun run start learn [--history-days 365]
   bun run start analyze [--days 90] [--history-days 365]
   bun run start match [--days 90] [--json]
@@ -78,7 +78,7 @@ function printHelp(): void {
 Environment:
   YNAB_ACCESS_TOKEN   required for YNAB commands
   YNAB_PLAN_ID        defaults to last-used
-  YNAB_ACCOUNT_NAME   recommended, e.g. "Amazon Visa"
+  YNAB_ACCOUNT_NAME   recommended, e.g. "Amazon Card"
   YNAB_ACCOUNT_ID     optional exact override
   AMAZON_MARKETPLACE  defaults to https://www.amazon.com
 `);

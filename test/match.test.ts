@@ -14,7 +14,7 @@ const transaction: YnabTransaction = {
   importPayeeName: "AMAZON MKTPLACE PMTS",
   importPayeeNameOriginal: "AMAZON MKTPLACE PMTS",
   accountId: "acct-1",
-  accountName: "Amazon Visa",
+  accountName: "Amazon Card",
   categoryId: null,
   categoryName: null,
   deleted: false,

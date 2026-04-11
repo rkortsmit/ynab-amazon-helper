@@ -11,7 +11,7 @@ import type {
 
 const account: YnabAccount = {
   id: "acct-1",
-  name: "Amazon Visa",
+  name: "Amazon Card",
 };
 
 const categories: YnabCategory[] = [
@@ -37,7 +37,7 @@ const baseTransaction: YnabTransaction = {
   importPayeeName: "Amazon",
   importPayeeNameOriginal: "Amazon",
   accountId: "acct-1",
-  accountName: "Amazon Visa",
+  accountName: "Amazon Card",
   categoryId: null,
   categoryName: null,
   deleted: false,
@@ -50,7 +50,7 @@ const baseCandidate: MatchCandidate = {
   dayDelta: 1,
   reasons: ["exact order total match", "date delta 1 day"],
   order: {
-    profile: "wife",
+    profile: "secondary",
     marketplace: "https://www.amazon.com",
     detailUrl: "https://www.amazon.com/your-orders/order-details?orderID=1",
     orderNumber: "111-2222222-3333333",
