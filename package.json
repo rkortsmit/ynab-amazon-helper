@@ -1,6 +1,8 @@
 {
   "name": "ynab-amazon-helper",
   "private": true,
+  "description": "Local-first YNAB and Amazon reconciliation helper for Codex or other AI assistants.",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "start": "bun run src/index.ts",
