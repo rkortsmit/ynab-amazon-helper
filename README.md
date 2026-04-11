@@ -152,6 +152,20 @@ Ask me only about anything uncertain or unmatched.
 Do not write to YNAB until I explicitly approve the final apply step.
 ```
 
+### Repo-Contained Codex Skill
+
+This repository includes a reusable Codex skill at:
+
+- `.codex/skills/ynab-amazon-budget/`
+
+Install it into your local Codex skills directory with:
+
+```bash
+bun run install:codex-skill
+```
+
+That copies the skill into `${CODEX_HOME:-~/.codex}/skills/ynab-amazon-budget` so future Codex chats can discover and use it directly.
+
 ## Using This With Another AI
 
 This repo does not require Codex specifically.

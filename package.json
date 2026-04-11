@@ -5,6 +5,7 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
+    "install:codex-skill": "bash scripts/install-codex-skill.sh",
     "start": "bun run src/index.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
