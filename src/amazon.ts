@@ -187,25 +187,30 @@ async function collectOrderDetailLinks(page: Page, pages: number): Promise<strin
   return [...found];
 }
 
-function findNextPageHref(page: Page): Promise<string | null> {
-  return page.evaluate(() => {
-    const candidates = Array.from(document.querySelectorAll<HTMLAnchorElement>("a"));
-    for (const candidate of candidates) {
-      const text = candidate.textContent?.trim() ?? "";
-      if (candidate.href && /^next page$/i.test(text)) {
-        return candidate.href;
-      }
-    }
+async function goToNextPaymentsPage(page: Page): Promise<boolean> {
+  const nextButton = page.locator('input[type="submit"][name*="NextPageNavigationEvent"]').first();
 
-    for (const candidate of candidates) {
-      const text = candidate.textContent?.trim() ?? "";
-      if (candidate.href && /next/i.test(text)) {
-        return candidate.href;
-      }
-    }
+  if ((await nextButton.count()) === 0) {
+    return false;
+  }
 
-    return null;
-  });
+  const before = await pageText(page);
+  await nextButton.click();
+
+  try {
+    await page.waitForFunction(
+      (previous) => (document.body?.innerText ?? "").trim() !== previous.trim(),
+      before,
+      { timeout: 15_000 },
+    );
+  } catch {
+    // Some transitions reuse the same text structure. Continue and let the caller
+    // decide whether a new page was actually available based on parsed rows.
+  }
+
+  await page.waitForLoadState("domcontentloaded").catch(() => {});
+  await page.waitForTimeout(1_500);
+  return true;
 }
 
 export function parsePaymentsTransactionsText(input: {
@@ -612,12 +617,10 @@ export async function syncAmazonPaymentTransactions(
         }),
       );
 
-      const nextHref = await findNextPageHref(page);
-      if (!nextHref || index === options.pages - 1) {
+      const hasNextPage = await goToNextPaymentsPage(page);
+      if (!hasNextPage || index === options.pages - 1) {
         break;
       }
-
-      await page.goto(nextHref, { waitUntil: "domcontentloaded" });
     }
 
     return transactions;
