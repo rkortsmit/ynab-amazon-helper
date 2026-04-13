@@ -1,18 +1,20 @@
 # YNAB Amazon Helper
 
-Local-first tooling for reconciling Amazon credit card purchases and refunds in YNAB with help from Codex or another AI assistant.
+Local-first tooling for reconciling Amazon purchases and broader YNAB budget transactions with help from Codex or another AI assistant.
 
 ## What This Is
 
-Amazon credit card charges and refunds in YNAB are often hard to categorize because the bank transaction usually only shows `Amazon` plus an amount. This project does the repetitive work locally on your machine:
+Amazon credit card charges and refunds in YNAB are often hard to categorize because the bank transaction usually only shows `Amazon` plus an amount. Non-Amazon transactions are often easier, but still repetitive. This project does the repetitive work locally on your machine:
 
 - pulls pending YNAB transactions
 - pulls recent Amazon order history from your local browser sessions
 - learns from your past categorizations
+- learns recurring non-Amazon merchant patterns from payee, payee+memo, payee-by-account, and refund history
 - builds a structured analysis bundle for an AI assistant
 - lets you apply only the decisions you explicitly trust
 - adds short YNAB memos for matched purchases when it can generate a useful description
 - uses Amazon's payments transaction history to improve split-charge and refund matching
+- keeps transfer/payment-looking transactions out of auto-apply so they can be reviewed manually
 
 The scripts are the plumbing. The AI is the reasoning layer.
 
@@ -39,10 +41,12 @@ Important: if you use an external AI provider, only share the local files you ar
 
 ## How It Works
 
-1. You sync recent Amazon orders from one or more local browser profiles.
+1. You sync recent Amazon orders from one or more local browser profiles when you want fresh Amazon data.
    The sync now reads both Your Orders and Your Payments > Transactions so split charges and refunds have a better source of truth.
-2. You pull your YNAB history and learn from past categorized Amazon transactions.
-3. You generate a single AI-ready analysis file.
+2. You pull your YNAB history and learn from past categorized transactions.
+   Amazon transactions learn from matched order/item history.
+   Non-Amazon transactions learn from exact payee, payee+memo, same-account payee, and refund history.
+3. You generate a single AI-ready analysis file for either an Amazon-only pass or a full-budget pass.
 4. Codex or another AI assistant reviews the file, proposes safe categorizations for both charges and refunds, and asks you only about uncertain cases.
 5. Confirmed decisions can be remembered for future runs.
 6. You preview the exact YNAB changes before writing anything.
@@ -59,6 +63,49 @@ Important: if you use an external AI provider, only share the local files you ar
 If you use two Amazon accounts on the same credit card, plan to keep two local browser profiles, for example `primary` and `secondary`.
 
 ## Recommended Workflow
+
+### Full Budget Reconcile
+
+This is the best umbrella workflow when you want to say something like "let's update the budget" or "let's reconcile transactions."
+
+If you want the freshest Amazon matches too, sync your Amazon profiles first:
+
+```bash
+bun run start amazon sync --profile primary --pages 5
+bun run start amazon sync --profile secondary --pages 5
+```
+
+Then generate the budget-wide analysis bundle:
+
+```bash
+bun run start reconcile analyze --days 90 --history-days 365
+```
+
+This creates:
+
+- `data/reconcile-latest.json`
+
+The full-budget bundle:
+
+- includes all unapproved transactions across the budget
+- routes Amazon-like transactions through the Amazon matcher
+- routes non-Amazon transactions through generic payee-history logic
+- tries to auto-handle easy merchants and refund matches
+- keeps transfer/payment-looking transactions in manual review
+
+Preview the write:
+
+```bash
+bun run start reconcile apply
+```
+
+Write only when you are ready:
+
+```bash
+bun run start reconcile apply --write
+```
+
+### Amazon-Focused Reconcile
 
 ### 1. Sync Amazon Orders
 
@@ -157,19 +204,19 @@ This is useful when a transaction is already categorized and approved in YNAB, b
 
 A good Codex workflow is:
 
-1. Run `analyze`
-2. Tell Codex to process your Amazon YNAB bundle
-3. Let Codex walk through the uncertain transactions with you
-4. Let Codex save confirmed decisions with `decide` and `remember`
-5. Let Codex show the dry-run `apply`
-6. Only then allow `apply --write`
+1. Run `reconcile analyze` when you want a budget-wide pass, or `analyze` when you want an Amazon-only pass
+2. Tell Codex to process the latest bundle
+3. Let Codex walk through only the uncertain transactions with you
+4. Let Codex save confirmed decisions with `decide`, and Amazon-specific reusable memory with `remember` when appropriate
+5. Let Codex show the dry-run `reconcile apply` or `apply`
+6. Only then allow the write command
 
 Example prompt:
 
 ```text
-Please help reconcile my Amazon transactions in YNAB.
-Read data/analysis-latest.json and data/category-memory.json.
-Auto-handle only high-confidence items, including refunds.
+Please help update my YNAB budget.
+Read data/reconcile-latest.json and data/category-memory.json.
+Auto-handle only high-confidence transactions, including Amazon refunds and easy recurring merchants.
 Ask me only about anything uncertain or unmatched.
 Do not write to YNAB until I explicitly approve the final apply step.
 ```
@@ -194,7 +241,8 @@ This repo does not require Codex specifically.
 
 Any AI assistant can help if it can read local files or if you provide the generated bundle. The most important files are:
 
-- `data/analysis-latest.json`: current transactions, matches, suggestions, and review buckets
+- `data/analysis-latest.json`: current Amazon-focused transactions, matches, suggestions, and review buckets
+- `data/reconcile-latest.json`: current full-budget reconcile bundle
 - `data/category-memory.json`: learned memory and reusable rules
 
 If the AI cannot run local commands, you can still use this repo manually to generate the files and then give those files to the AI for review.
@@ -203,16 +251,15 @@ If the AI cannot run local commands, you can still use this repo manually to gen
 
 If you are an AI assistant reading this repository, use this order of operations:
 
-1. Sync Amazon profiles when the user wants fresh order and payments data.
-2. Run `bun run start learn --history-days 365` unless the user wants a narrower pass.
-3. Run `bun run start analyze --days 90 --history-days 365`.
-4. Read `data/analysis-latest.json`.
-5. Focus on `auto_apply`, `needs_review`, and `no_match`, including Amazon refunds.
-6. Ask the user only about uncertain or unmatched transactions.
-7. Save confirmed one-off decisions with `decide`.
-8. Save reusable memory with `remember` only when the user wants that pattern reused.
-9. Show `bun run start apply` before any write.
-10. Never run `bun run start apply --write` without explicit user confirmation.
+1. If the user wants a budget-wide pass, prefer `bun run start reconcile analyze --days 90 --history-days 365`.
+2. If the user wants an Amazon-only pass, sync Amazon profiles when the user wants fresh order and payments data, run `bun run start learn --history-days 365`, then run `bun run start analyze --days 90 --history-days 365`.
+3. Read `data/reconcile-latest.json` for the budget-wide flow or `data/analysis-latest.json` for the Amazon-only flow.
+4. Focus on `auto_apply`, `needs_review`, and `no_match`, including Amazon refunds and non-Amazon recurring merchants.
+5. Ask the user only about uncertain or unmatched transactions.
+6. Save confirmed one-off decisions with `decide`.
+7. Save reusable Amazon memory with `remember` only when the user wants that pattern reused.
+8. Show `bun run start reconcile apply` or `bun run start apply` before any write.
+9. Never run a write command without explicit user confirmation.
 
 ## Command Reference
 
@@ -232,6 +279,24 @@ List YNAB categories:
 
 ```bash
 bun run start ynab categories
+```
+
+Generate a full-budget analysis bundle:
+
+```bash
+bun run start reconcile analyze --days 90 --history-days 365
+```
+
+Preview a full-budget apply:
+
+```bash
+bun run start reconcile apply
+```
+
+Write a full-budget apply:
+
+```bash
+bun run start reconcile apply --write
 ```
 
 Match transactions against cached orders:
@@ -271,6 +336,7 @@ bun run start review --days 90 --only ambiguous
 - `data/amazon-payments-*.json`: cached Amazon payments transaction history per profile
 - `data/category-memory.json`: learned rules plus reusable manual memory
 - `data/analysis-latest.json`: latest AI-ready review bundle
+- `data/reconcile-latest.json`: latest AI-ready full-budget bundle
 
 These files are ignored by git and are meant to stay local to your machine.
 

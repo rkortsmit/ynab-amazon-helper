@@ -274,16 +274,14 @@ function decideAction(match: TransactionMatch, suggestions: CategorySuggestion[]
   };
 }
 
-export function buildAnalysisBundle(input: {
-  account: YnabAccount;
+export function buildAmazonAnalysisTransactions(input: {
   categories: YnabCategory[];
   memory: MemoryStore;
   matches: TransactionMatch[];
-  pendingSinceDate: string;
-}): AnalysisBundle {
+}): AnalysisTransaction[] {
   const categoryById = new Map(input.categories.map((category) => [category.id, category]));
 
-  const transactions: AnalysisTransaction[] = input.matches.map((match) => {
+  return input.matches.map((match) => {
     const fingerprint = fingerprintOrder(match.best);
     const normalizedItems = match.best
       ? match.best.order.itemTitles.map((item) => normalizeTitle(item)).filter(Boolean)
@@ -302,6 +300,9 @@ export function buildAnalysisBundle(input: {
 
     return {
       transactionId: match.transaction.id,
+      accountId: match.transaction.accountId,
+      accountName: match.transaction.accountName ?? "(unknown account)",
+      workflow: "amazon",
       transactionDate: match.transaction.date,
       signedAmountCents: match.transaction.amountCents,
       amountCents: Math.abs(match.transaction.amountCents),
@@ -321,12 +322,29 @@ export function buildAnalysisBundle(input: {
       },
     };
   });
+}
 
-  const summary = {
+export function buildAnalysisSummary(transactions: AnalysisTransaction[]): AnalysisBundle["summary"] {
+  return {
     autoApply: transactions.filter((transaction) => transaction.decision.status === "auto_apply").length,
     needsReview: transactions.filter((transaction) => transaction.decision.status === "needs_review").length,
     noMatch: transactions.filter((transaction) => transaction.decision.status === "no_match").length,
   };
+}
+
+export function buildAnalysisBundle(input: {
+  account: YnabAccount;
+  categories: YnabCategory[];
+  memory: MemoryStore;
+  matches: TransactionMatch[];
+  pendingSinceDate: string;
+}): AnalysisBundle {
+  const transactions = buildAmazonAnalysisTransactions({
+    categories: input.categories,
+    memory: input.memory,
+    matches: input.matches,
+  });
+  const summary = buildAnalysisSummary(transactions);
 
   return {
     version: 1,
@@ -350,5 +368,36 @@ export function buildAnalysisBundle(input: {
     },
     summary,
     transactions,
+  };
+}
+
+export function buildBundleFromTransactions(input: {
+  account: YnabAccount;
+  categories: YnabCategory[];
+  pendingSinceDate: string;
+  historySinceDate: string;
+  cachedOrders: number;
+  transactions: AnalysisTransaction[];
+  memory: AnalysisBundle["memory"];
+  pendingAccounts?: number;
+}): AnalysisBundle {
+  return {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    account: {
+      id: input.account.id,
+      name: input.account.name,
+    },
+    source: {
+      pendingSinceDate: input.pendingSinceDate,
+      historySinceDate: input.historySinceDate,
+      pendingTransactions: input.transactions.length,
+      cachedOrders: input.cachedOrders,
+      pendingAccounts: input.pendingAccounts,
+    },
+    categories: input.categories.filter((category) => !category.deleted),
+    memory: input.memory,
+    summary: buildAnalysisSummary(input.transactions),
+    transactions: input.transactions,
   };
 }

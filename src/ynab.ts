@@ -106,6 +106,18 @@ export class YnabClient {
     return response.data.transactions.map(parseTransaction);
   }
 
+  async getTransactions(planId: string, sinceDate: string): Promise<YnabTransaction[]> {
+    const params = new URLSearchParams({
+      since_date: sinceDate,
+    });
+
+    const response = await this.request<YnabEnvelope<{ transactions: YnabApiTransaction[] }>>(
+      `/plans/${planId}/transactions?${params.toString()}`,
+    );
+
+    return response.data.transactions.map(parseTransaction);
+  }
+
   async getAccountTransactions(planId: string, accountId: string, sinceDate: string): Promise<YnabTransaction[]> {
     const params = new URLSearchParams({
       since_date: sinceDate,

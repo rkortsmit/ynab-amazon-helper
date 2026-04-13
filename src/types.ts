@@ -170,7 +170,12 @@ export type SuggestionEvidence = {
     | "override_exact_fingerprint"
     | "history_exact_order_number"
     | "learned_exact_item"
-    | "learned_exact_fingerprint";
+    | "learned_exact_fingerprint"
+    | "history_exact_payee"
+    | "history_exact_account_payee"
+    | "history_exact_payee_memo"
+    | "history_refund_match"
+    | "transfer_like";
   detail: string;
   score: number;
 };
@@ -186,6 +191,9 @@ export type AnalysisDecisionStatus = "auto_apply" | "needs_review" | "no_match";
 
 export type AnalysisTransaction = {
   transactionId: string;
+  accountId: string;
+  accountName: string;
+  workflow: "amazon" | "generic";
   transactionDate: string;
   signedAmountCents: number;
   amountCents: number;
@@ -217,6 +225,7 @@ export type AnalysisBundle = {
     historySinceDate: string;
     pendingTransactions: number;
     cachedOrders: number;
+    pendingAccounts?: number;
   };
   categories: YnabCategory[];
   memory: {
@@ -224,6 +233,10 @@ export type AnalysisBundle = {
     exactItemRules: number;
     exactFingerprintRules: number;
     historyExamples: number;
+    exactPayeeRules?: number;
+    exactAccountPayeeRules?: number;
+    exactPayeeMemoRules?: number;
+    genericHistoryExamples?: number;
   };
   summary: {
     autoApply: number;

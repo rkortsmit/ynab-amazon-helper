@@ -1,8 +1,9 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { buildAnalysisBundle } from "./analysis.ts";
+import { buildAmazonAnalysisTransactions, buildAnalysisBundle, buildBundleFromTransactions } from "./analysis.ts";
 import type { AppConfig } from "./config.ts";
 import { readAllOrders, readAllPaymentTransactions } from "./cache.ts";
+import { buildGenericAnalysisTransactions, buildGenericHistory } from "./generic.ts";
 import { buildMemoryStore, readMemory, writeMemory } from "./memory.ts";
 import { isAmazonishTransaction, matchTransactions } from "./match.ts";
 import type { AnalysisBundle, MemoryStore, TransactionMatch, YnabAccount, YnabCategory } from "./types.ts";
@@ -27,6 +28,21 @@ export type PendingMatchContext = {
 
 function analysisPath(config: AppConfig): string {
   return join(config.dataDir, "analysis-latest.json");
+}
+
+function budgetAnalysisPath(config: AppConfig): string {
+  return join(config.dataDir, "reconcile-latest.json");
+}
+
+async function resolvePlanContext(config: AppConfig, options: WorkflowOptions): Promise<{
+  client: YnabClient;
+  planId: string;
+}> {
+  const client = new YnabClient(config);
+  return {
+    client,
+    planId: options.planId ?? config.defaultPlanId,
+  };
 }
 
 async function resolveWorkflowAccount(config: AppConfig, options: WorkflowOptions): Promise<{
@@ -132,6 +148,116 @@ export async function analyzePendingTransactions(
   return { bundle, path };
 }
 
+export async function analyzeBudgetTransactions(
+  config: AppConfig,
+  options: WorkflowOptions,
+): Promise<{ bundle: AnalysisBundle; path: string }> {
+  const { client, planId } = await resolvePlanContext(config, options);
+  const days = options.days ?? 90;
+  const historyDays = options.historyDays ?? 365;
+  const pendingSinceDate = addDays(new Date().toISOString().slice(0, 10), -days);
+  const historySinceDate = addDays(new Date().toISOString().slice(0, 10), -historyDays);
+  const [categories, pendingTransactions, historyTransactions, existingMemory] = await Promise.all([
+    client.listCategories(planId),
+    client.getUnapprovedTransactions(planId, pendingSinceDate),
+    client.getTransactions(planId, historySinceDate),
+    readMemory(config),
+  ]);
+
+  const orders = await readAllOrders(config);
+  const paymentTransactions = await readAllPaymentTransactions(config);
+
+  const pendingAmazonTransactions = pendingTransactions.filter(
+    (transaction) =>
+      !transaction.deleted &&
+      !transaction.approved &&
+      transaction.amountCents !== 0 &&
+      isAmazonishTransaction(transaction),
+  );
+  const amazonHistoryTransactions = historyTransactions.filter(
+    (transaction) =>
+      !transaction.deleted &&
+      transaction.approved &&
+      transaction.amountCents !== 0 &&
+      Boolean(transaction.categoryId) &&
+      Boolean(transaction.categoryName) &&
+      isAmazonishTransaction(transaction),
+  );
+  const amazonPendingMatches = matchTransactions(pendingAmazonTransactions, orders, paymentTransactions);
+  const amazonHistoryMatches = matchTransactions(amazonHistoryTransactions, orders, paymentTransactions);
+  const amazonMemory = buildMemoryStore({
+    historyMatches: amazonHistoryMatches,
+    sinceDate: historySinceDate,
+    cachedOrders: orders.length,
+    existingMemory,
+  });
+
+  await writeMemory(config, amazonMemory);
+
+  const genericPendingTransactions = pendingTransactions.filter(
+    (transaction) =>
+      !transaction.deleted &&
+      !transaction.approved &&
+      transaction.amountCents !== 0 &&
+      !isAmazonishTransaction(transaction),
+  );
+  const genericHistory = buildGenericHistory(historyTransactions, historySinceDate);
+
+  const amazonAnalysisTransactions = buildAmazonAnalysisTransactions({
+    categories,
+    memory: amazonMemory,
+    matches: amazonPendingMatches,
+  });
+  const genericAnalysisTransactions = buildGenericAnalysisTransactions({
+    transactions: genericPendingTransactions,
+    categories,
+    history: genericHistory,
+  });
+  const transactions = [...amazonAnalysisTransactions, ...genericAnalysisTransactions].sort((left, right) => {
+    if (left.transactionDate !== right.transactionDate) {
+      return left.transactionDate.localeCompare(right.transactionDate);
+    }
+
+    if (left.accountName !== right.accountName) {
+      return left.accountName.localeCompare(right.accountName);
+    }
+
+    if (left.payee !== right.payee) {
+      return left.payee.localeCompare(right.payee);
+    }
+
+    return left.transactionId.localeCompare(right.transactionId);
+  });
+
+  const bundle = buildBundleFromTransactions({
+    account: {
+      id: "__budget__",
+      name: "All Budget Accounts",
+    } satisfies YnabAccount,
+    categories,
+    pendingSinceDate,
+    historySinceDate,
+    cachedOrders: orders.length,
+    transactions,
+    memory: {
+      updatedAt: new Date().toISOString(),
+      exactItemRules: amazonMemory.learned.exactItemRules.length,
+      exactFingerprintRules: amazonMemory.learned.exactFingerprintRules.length,
+      historyExamples: amazonMemory.historyExamples.length,
+      exactPayeeRules: genericHistory.exactPayeeRules.length,
+      exactAccountPayeeRules: genericHistory.exactAccountPayeeRules.length,
+      exactPayeeMemoRules: genericHistory.exactPayeeMemoRules.length,
+      genericHistoryExamples: genericHistory.historyExamples.length,
+    },
+    pendingAccounts: new Set(pendingTransactions.map((transaction) => transaction.accountId)).size,
+  });
+
+  const path = budgetAnalysisPath(config);
+  await writeAnalysisBundle(config, bundle, path);
+
+  return { bundle, path };
+}
+
 export async function readAnalysisBundle(config: AppConfig, explicitPath?: string | null): Promise<AnalysisBundle> {
   const path = explicitPath ?? analysisPath(config);
   const contents = await readFile(path, "utf8");
@@ -148,4 +274,8 @@ export async function writeAnalysisBundle(
 
 export function defaultAnalysisPath(config: AppConfig): string {
   return analysisPath(config);
+}
+
+export function defaultBudgetAnalysisPath(config: AppConfig): string {
+  return budgetAnalysisPath(config);
 }

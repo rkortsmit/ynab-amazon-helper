@@ -1,4 +1,4 @@
 interface:
-  display_name: "YNAB Amazon Budget"
-  short_description: "Reconcile Amazon purchases and refunds in YNAB with local-first AI help"
-  default_prompt: "Use the local ynab-amazon-helper workflow to reconcile Amazon purchases and refunds in YNAB, auto-handle only high-confidence items, ask only about uncertain transactions, and never write to YNAB without explicit approval."
+  display_name: "YNAB Budget Reconcile"
+  short_description: "Reconcile Amazon and non-Amazon YNAB transactions with local-first AI help"
+  default_prompt: "Use the local ynab-amazon-helper workflow to reconcile YNAB transactions across the budget, auto-handle only high-confidence items, ask only about uncertain transactions, and never write to YNAB without explicit approval."

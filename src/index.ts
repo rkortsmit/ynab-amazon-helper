@@ -14,7 +14,9 @@ import { reviewMatchesInteractive, type ReviewFilter } from "./review.ts";
 import {
   analyzePendingTransactions,
   defaultAnalysisPath,
+  defaultBudgetAnalysisPath,
   learnMemoryFromHistory,
+  analyzeBudgetTransactions,
   loadPendingMatchContext,
   readAnalysisBundle,
   writeAnalysisBundle,
@@ -81,6 +83,8 @@ function printHelp(): void {
   bun run start amazon sync --profile primary [--pages 5]
   bun run start learn [--history-days 365]
   bun run start analyze [--days 90] [--history-days 365]
+  bun run start reconcile analyze [--days 90] [--history-days 365]
+  bun run start reconcile apply [--file data/reconcile-latest.json] [--write]
   bun run start match [--days 90] [--json]
   bun run start review [--days 90] [--only all|matched|unmatched|ambiguous] [--limit 25]
   bun run start decide --transaction-id <id> --category <name-or-id> [--file data/analysis-latest.json]
@@ -226,6 +230,19 @@ async function run(): Promise<void> {
     return;
   }
 
+  if (group === "reconcile" && command === "analyze") {
+    const { bundle, path } = await analyzeBudgetTransactions(config, workflowOptions);
+    console.log(`Account scope: ${bundle.account.name}`);
+    console.log(`Pending transactions: ${bundle.source.pendingTransactions}`);
+    console.log(`Pending accounts: ${bundle.source.pendingAccounts ?? 0}`);
+    console.log(`Cached Amazon orders: ${bundle.source.cachedOrders}`);
+    console.log(`Auto-apply: ${bundle.summary.autoApply}`);
+    console.log(`Needs review: ${bundle.summary.needsReview}`);
+    console.log(`No match: ${bundle.summary.noMatch}`);
+    console.log(`Analysis bundle: ${path}`);
+    return;
+  }
+
   if (group === "match") {
     const { account, cachedOrders, matches } = await loadPendingMatchContext(config, workflowOptions);
 
@@ -346,8 +363,10 @@ async function run(): Promise<void> {
     return;
   }
 
-  if (group === "apply") {
-    const file = readStringOption(args.options, "file");
+  if (group === "apply" || (group === "reconcile" && command === "apply")) {
+    const file =
+      readStringOption(args.options, "file") ??
+      (group === "reconcile" ? defaultBudgetAnalysisPath(config) : null);
     const write = args.options.write === true;
     const bundle = await readAnalysisBundle(config, file);
     const client = new YnabClient(config);
