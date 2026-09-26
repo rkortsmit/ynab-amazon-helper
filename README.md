@@ -51,9 +51,9 @@ Leave the launcher window open while you use the helper. Close it to stop.
    - **Write a memo** with the item names. Preview it first, then write it.
    - **Pick a category** and save it. Tick "remember" to reuse that category for the same items in future orders.
    - **Split** the charge across several categories. The helper fills in Amazon's item prices when it can find them.
-3. **Apply.** Back on the Commands tab, preview **Apply categories**, then send your choices to YNAB. Keep "Only the ones I chose" turned on to send only the choices you made.
+3. **Send.** Click **Send to YNAB** in the bar pinned to the bottom of the Transactions tab. It shows how many choices are waiting, lets you preview them, and sends only the choices you made.
 
-Saving a category or split on the Transactions tab only records it on your computer. Nothing changes in YNAB until you run Apply. Every button that writes to YNAB shows a preview first and asks for confirmation.
+Saving a category or split on the Transactions tab only records it on your computer. Nothing changes in YNAB until you click Send to YNAB. Every button that writes to YNAB shows a preview first and asks for confirmation.
 
 ![Splitting a charge with Amazon prices](screenshots/04-split-with-amazon-prices.png)
 

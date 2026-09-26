@@ -122,6 +122,11 @@
   .setupstep h3 .stepnum { display: inline-flex; width: 22px; height: 22px; border-radius: 50%; align-items: center; justify-content: center; background: var(--code); color: var(--muted); font-size: 12px; }
   .setupstep.done h3 .stepnum { background: var(--ok-bg); color: var(--ok); }
   .setupstep.done { opacity: .85; }
+  .sendbar { position: sticky; bottom: 0; z-index: 4; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; padding: 12px 16px; background: var(--panel); border: 1px solid var(--line); border-top: 3px solid var(--accent); border-radius: 10px 10px 0 0; box-shadow: 0 -6px 18px rgba(0,0,0,.12); }
+  .sendbar .sendinfo { display: flex; flex-direction: column; margin-right: auto; min-width: 200px; }
+  .sendbar .sendinfo b { font-size: 15px; }
+  .sendbar.empty { border-top-color: var(--line); }
+  .sendbar .small { font-size: 12.5px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
   .splitrow > td { background: var(--bg); padding: 0 9px 12px; max-width: 0; white-space: normal; }
   .splitpanel { background: var(--panel); border: 1px solid var(--accent); border-radius: 8px; padding: 12px 14px; }
   .sphead { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }
@@ -177,6 +182,12 @@
       <span class="note" id="txInfo"></span>
     </div>
     <div id="txTable"></div>
+    <div id="sendbar" class="sendbar">
+      <div class="sendinfo"><b id="sendCount">Nothing to send yet</b><span id="sendDetail" class="note"></span></div>
+      <label class="small" title="After sending, run Analyze again so the sent transactions drop off the list"><input type="checkbox" id="sendRefresh"> refresh list afterwards</label>
+      <button class="btn secondary runbtn" id="sendPreview">Preview changes</button>
+      <button class="btn danger runbtn" id="sendGo">Send to YNAB…</button>
+    </div>
   </section>
   <section id="tab-guide" class="hidden">
     <div class="card">
@@ -186,7 +197,7 @@
         <li><b>Build the analysis</b> (Analyze – Amazon only). Pulls your unapproved Amazon transactions from YNAB, matches them to orders, and saves the result to a local file. Nothing in YNAB changes.</li>
         <li><b>Look it over</b> on the Transactions tab. You can pick categories right in the table.</li>
         <li><b>Memos only</b> (Memo apply). Preview, then write memos for the confident matches. Categories and approval stay untouched.</li>
-        <li><i>When you're ready:</i> choose categories or splits on the Transactions tab, then send them with <b>Apply categories</b> (preview first, with "Only the ones I chose" on).</li>
+        <li><i>When you're ready:</i> choose categories or splits on the Transactions tab, then click <b>Send to YNAB</b> in the bar pinned to the bottom of that tab (preview first if you like).</li>
       </ol>
       <p class="note">The analysis file is a snapshot. When new charges show up in YNAB, run Analyze again before Memo apply.</p>
     </div>
@@ -308,11 +319,11 @@ const GROUPS = [
         { key: "category", label: "Category", type: "text", list: "catlist" },
         { key: "scope", label: "Rule type", type: "select", options: [["item", "Each item title"], ["fingerprint", "This exact set of items"], ["both", "Both"]], def: "item",
           help: "\"Each item\" means any future order containing one of these items gets this category." }]},
-    { id: "apply", title: "Apply categories", badge: "write", canWrite: true,
+    { id: "apply", title: "Send categories to YNAB (Apply)", badge: "write", canWrite: true,
       desc: "Sends your choices to YNAB: sets the category (or the split), marks it approved, and fills an empty memo. With \"Only the ones I chose\" on, it sends only the categories and splits you picked on the Transactions tab and skips the tool's own auto-apply picks.",
-      warn: "This changes categories and approval in YNAB. Always read the preview first.",
+      warn: "Tip: the Transactions tab has a Send to YNAB bar pinned at the bottom that does the same thing. This changes categories and approval in YNAB, so read the preview first.",
       fields: [BUNDLE_FIELD, ONLY_DECIDED]},
-    { id: "reconcile-apply", title: "Apply categories – full budget", badge: "write", canWrite: true,
+    { id: "reconcile-apply", title: "Send categories to YNAB – full budget (Apply)", badge: "write", canWrite: true,
       desc: "Same as Apply, but for the full-budget analysis, across every account.",
       warn: "This changes categories and approval, including on non-Amazon transactions.",
       fields: [ONLY_DECIDED]},
@@ -566,7 +577,7 @@ async function runSeq(steps) {
   con.textContent = "";
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i];
-    const code = await run(s.command, s.values, false, { keep: true, label: s.label, step: steps.length > 1 ? `${i + 1} of ${steps.length}` : "" });
+    const code = await run(s.command, s.values, s.write === true, { keep: true, label: s.label, step: steps.length > 1 ? `${i + 1} of ${steps.length}` : "" });
     if (code !== 0) {
       if (i < steps.length - 1) alertInline("Stopped here because this step didn't finish cleanly. The remaining steps were not run.");
       return false;
@@ -679,6 +690,7 @@ async function loadBundle() {
   if (filter === "approved_uncat") rows = rows.filter((r) => r.approvedInYnab);
   const s = b.summary || {};
   const decided = b.transactions.filter((r) => r.selected || r.splits).length;
+  updateSendBar(which, b.transactions);
   info.textContent = `Built ${ago(b.modified)} · ${b.transactions.length} transactions · auto-apply ${s.autoApply ?? "?"} · needs review ${s.needsReview ?? "?"} · no match ${s.noMatch ?? "?"} · you've chosen ${decided}`;
 
   const table = el("table");
@@ -1070,7 +1082,7 @@ function renderSetup() {
 
   const allReady = s.configured && s.browserInstalled && s.profiles > 0;
   root.append(el("div", { className: "card" }, el("h3", { textContent: allReady ? "You're all set" : "Then, day to day" }),
-    el("p", { textContent: "Click Sync all accounts (with Analyze turned on), then work through the Transactions tab: add memos, pick categories or split charges, and finally send them with Apply categories. Every button that changes YNAB shows a preview first." })));
+    el("p", { textContent: "Click Sync all accounts (with Analyze turned on), then work through the Transactions tab: add memos, pick categories or split charges, and finally click Send to YNAB in the bar at the bottom of that tab. Every button that changes YNAB shows a preview first." })));
 }
 
 async function runSetupInstall(what) {
@@ -1085,6 +1097,54 @@ async function runSetupInstall(what) {
     await done;
   } catch (e) { alertInline(e.message); setOutCollapsed(false); }
 }
+
+// ---------- "Send to YNAB" bar (pinned to the bottom of the Transactions tab) ----------
+let sendState = { which: "analysis", categories: 0, splits: 0 };
+const sendCount = document.getElementById("sendCount"), sendDetail = document.getElementById("sendDetail");
+const sendPreview = document.getElementById("sendPreview"), sendGo = document.getElementById("sendGo"), sendRefresh = document.getElementById("sendRefresh");
+sendRefresh.checked = store.get("ynabgui.sendRefresh", true);
+sendRefresh.onchange = () => store.set("ynabgui.sendRefresh", sendRefresh.checked);
+
+function updateSendBar(which, rows) {
+  const splits = rows.filter((r) => r.splits && r.splits.length).length;
+  const categories = rows.filter((r) => r.selected && !(r.splits && r.splits.length)).length;
+  sendState = { which, categories, splits };
+  const n = categories + splits;
+  const where = which === "reconcile" ? "full-budget list" : "Amazon list";
+  document.getElementById("sendbar").classList.toggle("empty", n === 0);
+  sendCount.textContent = n ? `${n} choice${n > 1 ? "s" : ""} ready to send to YNAB` : "Nothing to send yet";
+  sendDetail.textContent = n
+    ? [categories ? `${categories} categor${categories > 1 ? "ies" : "y"}` : "", splits ? `${splits} split${splits > 1 ? "s" : ""}` : "", `from the ${where}`].filter(Boolean).join(" · ")
+    : "Pick categories or splits above. They collect here until you send them.";
+  sendGo.textContent = n ? `Send ${n} to YNAB…` : "Send to YNAB…";
+  for (const btn of [sendPreview, sendGo]) { btn.dataset.valid = n ? "1" : "0"; btn.disabled = !n || running; }
+}
+
+function applyStep(write) {
+  const which = sendState.which;
+  return which === "reconcile"
+    ? { command: "reconcile-apply", values: { onlyDecided: true }, write, label: write ? "Send to YNAB (full budget)" : "Preview (full budget)" }
+    : { command: "apply", values: { file: "analysis", onlyDecided: true }, write, label: write ? "Send to YNAB" : "Preview" };
+}
+
+sendPreview.onclick = async () => {
+  setOutCollapsed(false);
+  await runSeq([applyStep(false)]);
+};
+sendGo.onclick = async () => {
+  const { categories, splits, which } = sendState;
+  const n = categories + splits;
+  if (!n) return;
+  const lines = [categories ? `• ${categories} categor${categories > 1 ? "ies" : "y"}` : "", splits ? `• ${splits} split${splits > 1 ? "s" : ""}` : ""].filter(Boolean).join("\n");
+  if (!confirm(`Send ${n} choice${n > 1 ? "s" : ""} to YNAB?\n\n${lines}\n\nEach one gets its category (or split) and is marked approved, and an empty memo is filled with the item names. Nothing else is changed.`)) return;
+  setOutCollapsed(false);
+  const steps = [applyStep(true)];
+  if (sendRefresh.checked) {
+    const id = which === "reconcile" ? "reconcile-analyze" : "analyze";
+    steps.push({ command: id, values: cards[id]._values(), label: "Refreshing the list" });
+  }
+  await runSeq(steps);
+};
 
 // ---------- tabs (each tab remembers its own scroll position) ----------
 const tabScroll = {}; let curTab = "commands";
