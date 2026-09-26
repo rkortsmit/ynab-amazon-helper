@@ -8,3 +8,8 @@ profiles/
 
 .DS_Store
 *.log
+
+# Local working copies (never commit)
+backup-*/
+share/
+*.ico

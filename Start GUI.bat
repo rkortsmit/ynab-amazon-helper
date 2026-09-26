@@ -1,0 +1,39 @@
+@echo off
+title YNAB Amazon Helper
+cd /d "%~dp0"
+
+rem --- 1. Bun: the small program that runs this helper ---
+where bun >nul 2>nul
+if not errorlevel 1 goto have_bun
+if exist "%USERPROFILE%\.bun\bin\bun.exe" set "PATH=%USERPROFILE%\.bun\bin;%PATH%" & goto have_bun
+echo Bun is not installed yet. It is the free program that runs this helper - see https://bun.sh
+choice /C YN /M "Install Bun now"
+if errorlevel 2 goto no_bun
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm bun.sh/install.ps1 | iex"
+set "PATH=%USERPROFILE%\.bun\bin;%PATH%"
+where bun >nul 2>nul
+if errorlevel 1 goto no_bun
+:have_bun
+
+rem --- 2. The helper's components (first run only) ---
+if exist "node_modules\playwright" goto start
+echo Installing the helper's components. This happens only once...
+call bun install
+if errorlevel 1 goto install_failed
+
+:start
+bun gui\server.ts
+pause
+exit /b 0
+
+:no_bun
+echo.
+echo Bun is needed to run the helper. Install it from https://bun.sh and run this file again.
+pause
+exit /b 1
+
+:install_failed
+echo.
+echo Installing the components failed. Check your internet connection and run this file again.
+pause
+exit /b 1

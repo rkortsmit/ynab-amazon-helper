@@ -38,6 +38,8 @@ export type YnabTransaction = {
   categoryId: string | null;
   categoryName: string | null;
   deleted: boolean;
+  // Set when this is one side of a transfer between two of your accounts.
+  transferAccountId?: string | null;
 };
 
 export type AmazonOrder = {
@@ -52,6 +54,23 @@ export type AmazonOrder = {
   paymentLast4: string[];
   rawPreview: string;
   scrapedAt: string;
+  // Best-effort item prices read from the order details page (may be missing if Amazon's layout isn't recognized).
+  items?: AmazonOrderItem[];
+  costSummary?: AmazonOrderCostSummary;
+};
+
+export type AmazonOrderItem = {
+  title: string;
+  unitPriceCents: number | null;
+  quantity: number;
+};
+
+export type AmazonOrderCostSummary = {
+  subtotalCents: number | null;
+  shippingCents: number | null;
+  taxCents: number | null;
+  totalCents: number | null;
+  strategy: string;
 };
 
 export type AmazonPaymentTransaction = {
@@ -202,6 +221,8 @@ export type AnalysisTransaction = {
   bestMatch: MatchCandidate | null;
   ambiguous: boolean;
   suggestions: CategorySuggestion[];
+  // True when YNAB already shows it as approved (it was pulled in because it has no category yet).
+  approvedInYnab?: boolean;
   decision: {
     status: AnalysisDecisionStatus;
     shouldApprove: boolean;
@@ -210,7 +231,16 @@ export type AnalysisTransaction = {
     selectedCategoryId: string | null;
     selectedCategoryName: string | null;
     rationale: string[];
+    // Set by the "split" command: one line per category. Amounts are signed like the transaction and add up to it.
+    splits?: AnalysisSplit[] | null;
   };
+};
+
+export type AnalysisSplit = {
+  categoryId: string;
+  categoryName: string;
+  amountCents: number;
+  memo: string | null;
 };
 
 export type AnalysisBundle = {

@@ -1,9 +1,10 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { join } from "node:path";
+import { writeFile } from "node:fs/promises";
 import { chromium, type Page } from "playwright";
 import type { AppConfig } from "./config.ts";
-import type { AmazonOrder, AmazonPaymentTransaction } from "./types.ts";
+import type { AmazonOrder, AmazonOrderCostSummary, AmazonOrderItem, AmazonPaymentTransaction } from "./types.ts";
 import { ensureDir, parseMoneyToCents, parseUsDateToIso } from "./utils.ts";
 
 type SyncOptions = {
@@ -552,6 +553,17 @@ async function scrapeOrder(page: Page, detailUrl: string, profile: string, marke
     };
   }, { detailUrl, profile, marketplace });
 
+  // Item prices are optional extras: a layout change must never break the sync.
+  try {
+    const extracted = await extractOrderItems(page);
+    if (extracted.items.length) {
+      (order as AmazonOrder).items = extracted.items;
+      (order as AmazonOrder).costSummary = extracted.summary;
+    }
+  } catch {
+    // ignore
+  }
+
   return order;
 }
 
@@ -626,5 +638,149 @@ export async function syncAmazonPaymentTransactions(
     return transactions;
   } finally {
     await context.close();
+  }
+}
+
+// ---------- item prices (best effort; Amazon's page layout varies) ----------
+
+export type ExtractedOrderItems = {
+  items: AmazonOrderItem[];
+  summary: AmazonOrderCostSummary;
+};
+
+export async function extractOrderItems(page: Page): Promise<ExtractedOrderItems> {
+  return page.evaluate(() => {
+    const money = (value: string | null | undefined): number | null => {
+      if (!value) return null;
+      const m = value.replace(/,/g, "").match(/(-?)\$\s*(\d+)(?:\.(\d{2}))?/);
+      if (!m) return null;
+      return (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 100 + Number(m[3] ?? "0"));
+    };
+    const clean = (v: string | null | undefined) => (v ?? "").replace(/ /g, " ").replace(/\s+/g, " ").trim();
+    const text = document.body.innerText.replace(/ /g, " ");
+    const lines = text.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+
+    const labeled = (labels: string[]): number | null => {
+      for (let i = 0; i < lines.length; i += 1) {
+        for (const label of labels) {
+          const inline = lines[i].match(new RegExp(`^${label}:?\\s+(-?\\$[\\d,]+\\.\\d{2})`, "i"));
+          if (inline) return money(inline[1]);
+          if (new RegExp(`^${label}:?$`, "i").test(lines[i])) return money(lines[i + 1]);
+        }
+      }
+      return null;
+    };
+    const summaryBase = {
+      subtotalCents: labeled(["Item\\(s\\) Subtotal", "Items? Subtotal", "Subtotal"]),
+      shippingCents: labeled(["Shipping & Handling", "Shipping"]),
+      taxCents: labeled(["Estimated tax to be collected", "Estimated tax", "Tax"]),
+      totalCents: labeled(["Grand Total", "Order Total", "Total"]),
+    };
+
+    // Strategy 1: newer layout with data-component markers.
+    const blocks = Array.from(document.querySelectorAll('[data-component="purchasedItems"]'));
+    const fromComponents: AmazonOrderItem[] = [];
+    for (const block of blocks) {
+      const title = clean((block.querySelector('[data-component="itemTitle"]') as HTMLElement | null)?.innerText);
+      if (!title) continue;
+      const priceEl = block.querySelector('[data-component="unitPrice"]') as HTMLElement | null;
+      const qtyMatch = clean((block as HTMLElement).innerText).match(/\b(?:Qty|Quantity):?\s*(\d{1,3})\b/i);
+      const badge = clean((block.querySelector(".od-item-view-qty, .item-view-qty") as HTMLElement | null)?.innerText);
+      fromComponents.push({
+        title,
+        unitPriceCents: money(priceEl?.innerText),
+        quantity: qtyMatch ? Number(qtyMatch[1]) : /^\d{1,3}$/.test(badge) ? Number(badge) : 1,
+      });
+    }
+    if (fromComponents.length && fromComponents.some((i) => i.unitPriceCents !== null)) {
+      return { items: fromComponents, summary: { ...summaryBase, strategy: "data-component" } };
+    }
+
+    // Strategy 2: page text. Item titles are the lines followed by "Sold by:" (same rule the sync uses);
+    // the price is the first "$x.xx" line after the title and before the next item.
+    const titleIdx: number[] = [];
+    for (let i = 0; i < lines.length - 1; i += 1) {
+      if (lines[i].length >= 4 && lines[i].length <= 220 && /^(Sold by:|Condition:)/i.test(lines[i + 1]) && !/^\$/.test(lines[i])) {
+        titleIdx.push(i);
+      }
+    }
+    const fromText: AmazonOrderItem[] = [];
+    titleIdx.forEach((start, n) => {
+      const end = Math.min(titleIdx[n + 1] ?? lines.length, start + 12);
+      let price: number | null = null;
+      let qty = 1;
+      for (let j = start + 1; j < end; j += 1) {
+        const q = lines[j].match(/^(?:Qty|Quantity):?\s*(\d{1,3})$/i);
+        if (q) qty = Number(q[1]);
+        if (price === null && /^\$[\d,]+\.\d{2}$/.test(lines[j])) price = money(lines[j]);
+      }
+      const before = lines[start - 1] ?? "";
+      if (qty === 1 && /^\d{1,2}$/.test(before) && Number(before) >= 2 && Number(before) <= 50) qty = Number(before);
+      fromText.push({ title: lines[start], unitPriceCents: price, quantity: qty });
+    });
+    return { items: fromText, summary: { ...summaryBase, strategy: fromText.some((i) => i.unitPriceCents !== null) ? "text" : "none" } };
+  });
+}
+
+function orderDetailsUrl(marketplace: string, orderNumber: string): string {
+  const url = new URL("/your-orders/order-details", marketplace);
+  url.searchParams.set("orderID", orderNumber);
+  return url.toString();
+}
+
+// Opens one order in the given profile's saved Amazon login, reads item prices, and (optionally) leaves the window open.
+export async function openOrderInProfile(
+  config: AppConfig,
+  options: { profile: string; marketplace: string; orderNumber: string; keepOpen: boolean },
+): Promise<ExtractedOrderItems> {
+  const userDataDir = join(config.profilesDir, options.profile);
+  await ensureDir(userDataDir);
+  const context = await chromium.launchPersistentContext(userDataDir, {
+    headless: false,
+    viewport: { width: 1440, height: 980 },
+  });
+
+  let closed = false;
+  context.on("close", () => {
+    closed = true;
+  });
+
+  try {
+    const page = context.pages()[0] ?? (await context.newPage());
+    const target = orderDetailsUrl(options.marketplace, options.orderNumber);
+    await page.goto(target, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(1_500);
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const current = await pageText(page);
+      if (current.includes(options.orderNumber) && !page.url().includes("/ap/signin")) break;
+      if (/sign in/i.test(current) || page.url().includes("/ap/signin")) {
+        await waitForManualFix(page, "Amazon needs you to sign in to this account in the opened browser window.", target);
+        continue;
+      }
+      if (/characters you see below|enter the characters you see/i.test(current) || page.url().includes("validateCaptcha")) {
+        await waitForManualFix(page, "Amazon is showing a captcha. Solve it in the browser, then come back here.", target);
+        continue;
+      }
+      await waitForManualFix(page, `The order page for ${options.orderNumber} wasn't detected. Open it in the browser window, then come back here.`, target);
+    }
+
+    await page.waitForTimeout(800);
+    const extracted = await extractOrderItems(page);
+
+    // Keep a copy of the last order page so the price reader can be checked against Amazon's real layout.
+    const debugDir = join(config.dataDir, "debug");
+    await ensureDir(debugDir);
+    await writeFile(join(debugDir, "last-order-page.html"), await page.content(), "utf8");
+
+    if (options.keepOpen) {
+      console.log(`The order is open in the "${options.profile}" browser window. Close that window when you're done.`);
+      while (!closed && context.pages().length > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+      }
+    }
+    return extracted;
+  } finally {
+    if (!closed) await context.close().catch(() => {});
   }
 }

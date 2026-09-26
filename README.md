@@ -1,5 +1,13 @@
 # YNAB Amazon Helper
 
+> **This fork adds a point-and-click GUI** with guided setup, memo-only updates, multiple Amazon
+> accounts, split transactions, and item prices from Amazon order pages.
+> **Start here: [README-GUI.md](README-GUI.md)** (Windows: double-click `Start GUI.bat`).
+>
+> ![Transactions tab](screenshots/03-transactions.png)
+>
+> Original project: [deshazer/ynab-amazon-helper](https://github.com/deshazer/ynab-amazon-helper) (MIT). The original documentation follows below.
+
 Local-first tooling for reconciling Amazon purchases and broader YNAB budget transactions with help from Codex or another AI assistant.
 
 ## What This Is

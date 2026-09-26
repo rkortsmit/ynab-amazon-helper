@@ -2,6 +2,11 @@ import type { AmazonOrder, AmazonPaymentTransaction, MatchCandidate, Transaction
 import { daysBetween, normalizeText, uniq } from "./utils.ts";
 
 export function isAmazonishTransaction(transaction: YnabTransaction): boolean {
+  // A transfer between your own accounts (e.g. paying the Amazon card) is never an Amazon purchase.
+  if (transaction.transferAccountId) {
+    return false;
+  }
+
   const haystack = uniq([
     normalizeText(transaction.payeeName),
     normalizeText(transaction.importPayeeName),

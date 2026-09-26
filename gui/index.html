@@ -1,0 +1,1115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YNAB Amazon Helper</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1d2330; --muted: #5d6677; --line: #dfe3ea;
+    --accent: #2f5bd3; --accent-ink: #fff; --ok: #1f7a4d; --ok-bg: #e5f4ec; --warn: #9a5b00; --warn-bg: #fdf1dc;
+    --danger: #b3261e; --danger-bg: #fbe6e4; --danger-ink: #fff; --code: #f0f2f6; --console: #111722; --console-ink: #d8dee9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --panel: #1a1f28; --ink: #e5e8ee; --muted: #9aa3b2; --line: #2c3340;
+      --accent: #6e93ff; --accent-ink: #0b1020; --ok: #6fd3a0; --ok-bg: #173327; --warn: #f0b764; --warn-bg: #3a2c14;
+      --danger: #ff8a80; --danger-bg: #3d1c1a; --danger-ink: #2a0b09; --code: #222835; --console: #0b0e14; --console-ink: #d8dee9;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 "Segoe UI", system-ui, -apple-system, sans-serif; }
+  header { padding: 16px 24px 0; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 12px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .chip { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 3px 10px; font-size: 12.5px; }
+  .chip.ok { border-color: transparent; background: var(--ok-bg); color: var(--ok); }
+  .chip.bad { border-color: transparent; background: var(--danger-bg); color: var(--danger); }
+  nav.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); padding: 0 24px; position: sticky; top: 0; z-index: 5; background: var(--bg); }
+  nav.tabs button { border: 0; background: none; padding: 10px 14px; font: inherit; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; }
+  nav.tabs button.active { color: var(--ink); border-bottom-color: var(--accent); font-weight: 600; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(290px, 30%); gap: 20px; padding: 20px 24px 24px; align-items: start; }
+  main > section { min-width: 0; }
+  body.out-collapsed main { grid-template-columns: minmax(0, 1fr) 40px; gap: 12px; }
+  @media (max-width: 1000px) {
+    main, body.out-collapsed main { grid-template-columns: 1fr; }
+    .console-wrap { position: static !important; height: 60vh !important; }
+    body.out-collapsed .console-wrap { height: auto !important; }
+    .outstrip { writing-mode: horizontal-tb !important; width: 100%; }
+  }
+  /* collapsed output panel: a slim clickable strip */
+  .outstrip { display: none; }
+  body.out-collapsed .console-wrap > :not(.outstrip) { display: none !important; }
+  body.out-collapsed .outstrip { display: flex; align-items: center; justify-content: center; gap: 8px; flex: 1; border: 0; background: none; color: var(--muted); cursor: pointer; font: inherit; font-weight: 600; writing-mode: vertical-rl; padding: 12px 0; }
+  .outstrip:hover { color: var(--ink); }
+  .outstrip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
+  .outstrip[data-state="running"] .dot { background: var(--accent); animation: pulse 1s infinite alternate; }
+  .outstrip[data-state="error"] .dot { background: var(--danger); }
+  .outstrip[data-state="ok"] .dot { background: var(--ok); }
+  @keyframes pulse { from { opacity: .35; } to { opacity: 1; } }
+  .group-title { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 22px 0 8px; }
+  .group-title:first-child { margin-top: 0; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; }
+  .card.flash { outline: 2px solid var(--accent); }
+  .card h3 { font-size: 15px; margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .badge { font-size: 11.5px; font-weight: 600; border-radius: 4px; padding: 1px 7px; }
+  .b-read { background: var(--ok-bg); color: var(--ok); }
+  .b-local { background: var(--code); color: var(--muted); }
+  .b-memo { background: var(--warn-bg); color: var(--warn); }
+  .b-write { background: var(--danger-bg); color: var(--danger); }
+  .card p { margin: 6px 0; }
+  .note { color: var(--muted); font-size: 13px; }
+  .warnbox { background: var(--warn-bg); color: var(--warn); border-radius: 6px; padding: 6px 10px; font-size: 13px; margin: 8px 0; }
+  .fields { display: flex; flex-wrap: wrap; gap: 10px 16px; margin: 10px 0 6px; }
+  .field { display: flex; flex-direction: column; gap: 2px; min-width: 150px; flex: 1 1 150px; max-width: 320px; }
+  .field label { font-size: 12.5px; font-weight: 600; }
+  .field .help { font-size: 12px; color: var(--muted); }
+  .field.check { flex-direction: row; align-items: center; gap: 6px; }
+  input, select { font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+  code, .cmd { font-family: Consolas, "Cascadia Mono", monospace; font-size: 12.5px; }
+  .cmd:empty { display: none; }
+  .cmd { display: block; background: var(--code); border-radius: 6px; padding: 6px 8px; margin: 8px 0; color: var(--muted); overflow-x: auto; white-space: nowrap; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  button.btn { font: inherit; border-radius: 6px; padding: 6px 14px; cursor: pointer; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  button.btn.secondary { background: transparent; color: var(--accent); }
+  button.btn.danger { background: var(--danger); border-color: var(--danger); color: var(--danger-ink); }
+  button.btn:disabled { opacity: .45; cursor: not-allowed; }
+  button.link { border: 0; background: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; font-size: 12.5px; }
+  .console-wrap { position: sticky; top: 56px; height: calc(100vh - 68px); display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .console-head { padding: 10px 12px; border-bottom: 1px solid var(--line); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .console-head .title { font-weight: 600; margin-right: auto; }
+  #jobstate { font-size: 12.5px; color: var(--muted); }
+  #jobcmd { padding: 6px 12px; font-family: Consolas, monospace; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--line); word-break: break-all; }
+  #console { flex: 1; margin: 0; padding: 10px 12px; background: var(--console); color: var(--console-ink); font: 12.5px/1.45 Consolas, "Cascadia Mono", monospace; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+  #enterbar { display: none; padding: 10px 12px; background: var(--warn-bg); color: var(--warn); border-top: 1px solid var(--line); }
+  #enterbar.show { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+  .hidden { display: none !important; }
+  table { width: 100%; table-layout: fixed; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); font-size: 13px; }
+  td:first-child { white-space: nowrap; }
+  th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; background: var(--bg); position: sticky; top: 43px; z-index: 1; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.pos { color: var(--ok); }
+  .items { color: var(--muted); font-size: 12.5px; }
+  .toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .pill { font-size: 11.5px; border-radius: 4px; padding: 1px 6px; white-space: nowrap; }
+  .p-strong { background: var(--ok-bg); color: var(--ok); }
+  .p-medium, .p-weak, .p-amb { background: var(--warn-bg); color: var(--warn); }
+  .p-none { background: var(--code); color: var(--muted); }
+  .rowacts { display: flex; flex-direction: column; gap: 3px; white-space: nowrap; }
+  .error { color: var(--danger); font-size: 13px; margin-top: 6px; }
+  .group { margin-bottom: 6px; }
+  .group-head { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; background: none; padding: 10px 2px; cursor: pointer; font: inherit; color: var(--muted); text-align: left; }
+  .group-head:hover { color: var(--ink); }
+  .group-head .chev { display: inline-block; transition: transform .15s; font-size: 10px; width: 12px; }
+  .group-head[aria-expanded="true"] .chev { transform: rotate(90deg); }
+  .group-head .gt { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+  .group-head .gcount { font-size: 12px; }
+  .group-body.collapsed { display: none; }
+  .cmdbar { display: flex; gap: 14px; justify-content: flex-end; margin-bottom: 4px; }
+  .profrow { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .profrow:last-child { border-bottom: 0; }
+  .profrow .pname { font-weight: 600; min-width: 110px; }
+  .profrow .pwhen { color: var(--muted); font-size: 13px; margin-right: auto; }
+  .rowedit { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .rowedit .line { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .rowedit input[type=text] { width: 100%; min-width: 0; padding: 3px 6px; font-size: 13px; }
+  .rowedit .small { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
+  button.btn.sm { padding: 3px 10px; font-size: 12.5px; }
+  tr.flash td { background: var(--ok-bg); }
+  td { transition: background .8s; }
+  .setupstep h3 .stepnum { display: inline-flex; width: 22px; height: 22px; border-radius: 50%; align-items: center; justify-content: center; background: var(--code); color: var(--muted); font-size: 12px; }
+  .setupstep.done h3 .stepnum { background: var(--ok-bg); color: var(--ok); }
+  .setupstep.done { opacity: .85; }
+  .splitrow > td { background: var(--bg); padding: 0 9px 12px; max-width: 0; white-space: normal; }
+  .splitpanel { background: var(--panel); border: 1px solid var(--accent); border-radius: 8px; padding: 12px 14px; }
+  .sphead { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }
+  .sphead a { color: var(--accent); font-size: 13px; }
+  .splines { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+  .spline { display: grid; grid-template-columns: minmax(140px, 1.2fr) 110px minmax(140px, 1.6fr) 24px; gap: 8px; align-items: center; }
+  .spline input { width: 100%; min-width: 0; padding: 4px 7px; font-size: 13px; }
+  .spline .amt { display: flex; align-items: center; gap: 3px; }
+  .sphdr span { font-size: 12px; color: var(--muted); font-weight: 600; }
+  .sptools { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; }
+  .sprices { margin: 6px 0 4px; padding: 6px 10px; background: var(--bg); border-radius: 6px; }
+  .sphead .btn { margin-left: 4px; }
+  .spnote:empty { display: none; }
+  .spnote { margin: 4px 0; color: var(--accent); }
+  .spstatus { font-size: 13px; color: var(--warn); margin-bottom: 8px; }
+  .spstatus.ok { color: var(--ok); }
+</style>
+</head>
+<body>
+<header>
+  <h1>YNAB Amazon Helper</h1>
+  <p class="sub">Every button runs one of the helper's commands on this computer. Preview buttons never change YNAB. Red buttons write to YNAB and ask first.</p>
+  <div class="chips" id="chips"><span class="chip">Loading status…</span></div>
+</header>
+<nav class="tabs">
+  <button data-tab="setup">Setup</button>
+  <button data-tab="commands" class="active">Commands</button>
+  <button data-tab="transactions">Transactions</button>
+  <button data-tab="guide">How it fits together</button>
+</nav>
+<main>
+  <section id="tab-setup" class="hidden"></section>
+  <section id="tab-commands"></section>
+  <section id="tab-transactions" class="hidden">
+    <div class="toolbar">
+      <label>Analysis file
+        <select id="txBundle">
+          <option value="analysis">Amazon-only (analysis-latest.json)</option>
+          <option value="reconcile">Full budget (reconcile-latest.json)</option>
+        </select>
+      </label>
+      <label>Show
+        <select id="txFilter">
+          <option value="all">All</option>
+          <option value="matched">Matched to an Amazon order</option>
+          <option value="unmatched">No match</option>
+          <option value="auto_apply">Tool would auto-apply</option>
+          <option value="needs_review">Needs review</option>
+          <option value="undecided">No category chosen yet</option>
+          <option value="approved_uncat">Approved in YNAB, no category</option>
+        </select>
+      </label>
+      <span class="note" id="txInfo"></span>
+    </div>
+    <div id="txTable"></div>
+  </section>
+  <section id="tab-guide" class="hidden">
+    <div class="card">
+      <h3>The usual flow</h3>
+      <ol>
+        <li><b>Get Amazon orders</b> (Amazon sync). Refreshes the local copy of your order history. Nothing in YNAB changes.</li>
+        <li><b>Build the analysis</b> (Analyze – Amazon only). Pulls your unapproved Amazon transactions from YNAB, matches them to orders, and saves the result to a local file. Nothing in YNAB changes.</li>
+        <li><b>Look it over</b> on the Transactions tab. You can pick categories right in the table.</li>
+        <li><b>Memos only</b> (Memo apply). Preview, then write memos for the confident matches. Categories and approval stay untouched.</li>
+        <li><i>When you're ready:</i> choose categories or splits on the Transactions tab, then send them with <b>Apply categories</b> (preview first, with "Only the ones I chose" on).</li>
+      </ol>
+      <p class="note">The analysis file is a snapshot. When new charges show up in YNAB, run Analyze again before Memo apply.</p>
+    </div>
+    <div class="card">
+      <h3>What each badge means</h3>
+      <p><span class="badge b-read">Read-only</span> Only reads from YNAB or Amazon. Safe to run any time.</p>
+      <p><span class="badge b-local">Local files</span> Saves files in this folder's <code>data</code> folder. Doesn't touch YNAB.</p>
+      <p><span class="badge b-memo">Memo write</span> Preview by default. The red button changes memos in YNAB only.</p>
+      <p><span class="badge b-write">Category write</span> Preview by default. The red button sets categories and approval in YNAB.</p>
+    </div>
+    <div class="card">
+      <h3>Not included here</h3>
+      <p>The interactive <code>review</code> command needs a real terminal, so it isn't a button. The Transactions tab shows the same information.</p>
+      <p class="note">To stop the GUI, close the black launcher window.</p>
+    </div>
+  </section>
+
+  <aside class="console-wrap">
+    <div class="console-head">
+      <span class="title">Output</span>
+      <span id="jobstate">Nothing run yet</span>
+      <button class="btn secondary" id="stopBtn" disabled>Stop</button>
+      <button class="btn secondary" id="clearBtn">Clear</button>
+      <button class="btn secondary" id="collapseBtn" title="Hide the output panel to give the list more room">Hide ⇥</button>
+    </div>
+    <button class="outstrip" id="expandBtn" title="Show the output panel"><span class="dot"></span>Output</button>
+    <div id="jobcmd"></div>
+    <pre id="console"></pre>
+    <div id="enterbar">
+      <span>The command is waiting. Finish what's needed in the Amazon browser window, then continue.</span>
+      <button class="btn" id="enterBtn">Continue</button>
+    </div>
+  </aside>
+</main>
+
+<datalist id="catlist"></datalist>
+
+<script>
+const TOKEN = new URLSearchParams(location.search).get("t") || "";
+const api = async (path, opts = {}) => {
+  const res = await fetch(path, { ...opts, headers: { "X-Token": TOKEN, "Content-Type": "application/json", ...(opts.headers || {}) } });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+};
+
+// ---------- command definitions ----------
+const BUNDLE_FIELD = { key: "file", label: "Analysis file", type: "select", options: [["analysis", "Amazon-only (analysis-latest.json)"], ["reconcile", "Full budget (reconcile-latest.json)"]], def: "analysis",
+  help: "Which analysis to use. Amazon-only is what Analyze makes." };
+const TXID_FIELD = { key: "transactionId", label: "Transaction ID", type: "text", placeholder: "transaction id", help: "Easier: use the buttons on the Transactions tab." };
+
+const UNAPPROVED_ONLY = { key: "unapprovedOnly", label: "Unapproved only", type: "checkbox",
+  help: "Leave off to also include approved transactions that still have no category." };
+const ONLY_DECIDED = { key: "onlyDecided", label: "Only the ones I chose", type: "checkbox", def: true,
+  help: "Recommended. Leaves out transactions you haven't chosen yourself." };
+
+const GROUPS = [
+  { title: "1 · Check your YNAB connection", cards: [
+    { id: "ynab-plans", title: "List budgets", badge: "read",
+      desc: "Lists your YNAB budgets (the tool calls them plans) and their IDs. If this works, your access token is good." },
+    { id: "ynab-accounts", title: "List accounts", badge: "read",
+      desc: "Lists the accounts in your budget. The YNAB_ACCOUNT_NAME line in your .env file must match your Amazon card's account name here." },
+    { id: "ynab-categories", title: "List categories", badge: "read",
+      desc: "Lists every category with its group. Handy for spelling category names exactly in Decide and Remember." },
+  ]},
+  { title: "2 · Get Amazon orders", cards: [
+    { id: "amazon-sync", custom: "profiles", title: "Amazon sync", badge: "local",
+      desc: "Each Amazon account has its own saved login (a profile). Syncing opens a separate browser window, reads Your Orders and Your Payments › Transactions, and saves them in the data folder. Doesn't touch YNAB.",
+      warn: "If Amazon asks you to sign in, enter a code or solve a captcha, do it in that browser window, then click Continue in the Output panel." },
+  ]},
+  { title: "3 · Build the analysis", cards: [
+    { id: "analyze", title: "Analyze – Amazon only", badge: "local",
+      desc: "Pulls Amazon transactions for your card account that still need attention in YNAB: unapproved ones, plus approved ones that never got a category (cleared or not). Matches them to your saved orders, learns from past categories, and saves the result to data/analysis-latest.json. Nothing in YNAB changes.",
+      fields: [
+        { key: "days", label: "Look back (days)", type: "number", def: 90, min: 1, max: 730, help: "How far back to look." },
+        { key: "historyDays", label: "Learning history (days)", type: "number", def: 365, min: 1, max: 3650, help: "How much of your categorized history to learn from." },
+        UNAPPROVED_ONLY,
+      ]},
+    { id: "reconcile-analyze", title: "Analyze – full budget", badge: "local",
+      desc: "Same idea, but covers every account, Amazon or not: unapproved transactions plus approved ones with no category. Non-Amazon charges get category suggestions based on payee history. Saves data/reconcile-latest.json. Nothing in YNAB changes.",
+      fields: [
+        { key: "days", label: "Look back (days)", type: "number", def: 90, min: 1, max: 730 },
+        { key: "historyDays", label: "Learning history (days)", type: "number", def: 365, min: 1, max: 3650 },
+        UNAPPROVED_ONLY,
+      ]},
+    { id: "learn", title: "Learn from past categories", badge: "local",
+      desc: "Matches your already-categorized Amazon transactions to orders and saves item → category patterns in data/category-memory.json. Analyze already does this, so you rarely need to run it on its own.",
+      fields: [{ key: "historyDays", label: "History (days)", type: "number", def: 365, min: 1, max: 3650 }]},
+    { id: "match", title: "Match report", badge: "read",
+      desc: "Prints how your unapproved Amazon transactions match your saved orders, without saving anything.",
+      fields: [{ key: "days", label: "Look back (days)", type: "number", def: 90, min: 1, max: 730 }]},
+  ]},
+  { title: "4 · Memos only", cards: [
+    { id: "memo-apply", title: "Memo apply", badge: "memo", canWrite: true,
+      desc: "Adds a short description of what you bought to the memo of matched transactions in the analysis file. It never changes category or approval. A transaction is only included when the match is strong, no other order is a close second, and the memo is empty. Right before writing, it re-checks YNAB so it never overwrites a memo.",
+      warn: "First time: set Limit to 1, write, and check that transaction in YNAB before doing the rest.",
+      fields: [
+        BUNDLE_FIELD,
+        { key: "minConfidence", label: "Minimum match", type: "select", options: [["strong", "Strong (recommended)"], ["medium", "Medium or better"]], def: "strong", help: "How sure the match must be." },
+        { key: "limit", label: "Limit", type: "number", min: 1, max: 1000, help: "Only do the first N. Leave blank for all." },
+        TXID_FIELD,
+      ]},
+    { id: "memo-backfill", title: "Memo backfill (already-approved)", badge: "memo", canWrite: true,
+      desc: "Adds memos to Amazon transactions you've already approved in your card account. It reads YNAB live and doesn't use the analysis file.",
+      warn: "This one uses the top match even when the match is weak. Read the preview carefully before writing.",
+      fields: [
+        { key: "days", label: "Look back (days)", type: "number", def: 45, min: 1, max: 730 },
+        { key: "overwrite", label: "Replace existing memos", type: "checkbox", help: "Leave off unless you want your current memos replaced." },
+      ]},
+  ]},
+  { title: "5 · Categories and approval", cards: [
+    { id: "decide", title: "Decide a category", badge: "local",
+      desc: "Records your category choice for one transaction in the analysis file and marks it to be approved. Nothing goes to YNAB until you run Apply with Write.",
+      fields: [BUNDLE_FIELD, TXID_FIELD,
+        { key: "category", label: "Category", type: "text", list: "catlist", help: "Start typing. Names come from the analysis file." }]},
+    { id: "remember", title: "Remember for next time", badge: "local",
+      desc: "Saves a rule so future analyses suggest this category for the same Amazon items. Only works on transactions matched to an order. Doesn't touch YNAB.",
+      fields: [BUNDLE_FIELD, TXID_FIELD,
+        { key: "category", label: "Category", type: "text", list: "catlist" },
+        { key: "scope", label: "Rule type", type: "select", options: [["item", "Each item title"], ["fingerprint", "This exact set of items"], ["both", "Both"]], def: "item",
+          help: "\"Each item\" means any future order containing one of these items gets this category." }]},
+    { id: "apply", title: "Apply categories", badge: "write", canWrite: true,
+      desc: "Sends your choices to YNAB: sets the category (or the split), marks it approved, and fills an empty memo. With \"Only the ones I chose\" on, it sends only the categories and splits you picked on the Transactions tab and skips the tool's own auto-apply picks.",
+      warn: "This changes categories and approval in YNAB. Always read the preview first.",
+      fields: [BUNDLE_FIELD, ONLY_DECIDED]},
+    { id: "reconcile-apply", title: "Apply categories – full budget", badge: "write", canWrite: true,
+      desc: "Same as Apply, but for the full-budget analysis, across every account.",
+      warn: "This changes categories and approval, including on non-Amazon transactions.",
+      fields: [ONLY_DECIDED]},
+  ]},
+];
+
+const BADGES = { read: ["b-read", "Read-only"], local: ["b-local", "Local files"], memo: ["b-memo", "Memo write"], write: ["b-write", "Category write"] };
+const WRITE_TEXT = {
+  "memo-apply": "This will write memos in YNAB for the transactions shown in the preview. Categories and approval stay unchanged.\n\nContinue?",
+  "memo-backfill": "This will write memos in YNAB on already-approved transactions, using the top match even when it's weak.\n\nDid you check the preview? Continue?",
+  "apply": "This will set CATEGORIES and APPROVAL in YNAB for every transaction in the preview.\n\nContinue?",
+  "reconcile-apply": "This will set CATEGORIES and APPROVAL in YNAB across ALL accounts for every transaction in the preview.\n\nContinue?",
+};
+
+// ---------- render commands ----------
+const cmdRoot = document.getElementById("tab-commands");
+const el = (tag, props = {}, ...kids) => {
+  const n = Object.assign(document.createElement(tag), props);
+  for (const k of kids) if (k != null) n.append(k);
+  return n;
+};
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+const cards = {}; // id -> card element
+
+function renderCommands() {
+  // Default: stage 1 (connection check) starts collapsed; after that, whatever you last chose.
+  const collapsed = new Set(store.get("ynabgui.collapsed", [GROUPS[0].title]));
+  const bar = el("div", { className: "cmdbar" });
+  const expandAll = el("button", { className: "link", textContent: "Expand all" });
+  const collapseAll = el("button", { className: "link", textContent: "Collapse all" });
+  bar.append(expandAll, collapseAll);
+  cmdRoot.append(bar);
+
+  const heads = [];
+  for (const g of GROUPS) {
+    const sec = el("section", { className: "group" });
+    const head = el("button", { className: "group-head" },
+      el("span", { className: "chev", textContent: "▶" }),
+      el("span", { className: "gt", textContent: g.title }),
+      el("span", { className: "gcount", textContent: `· ${g.cards.length} ${g.cards.length === 1 ? "command" : "commands"}` }));
+    const body = el("div", { className: "group-body" });
+    for (const c of g.cards) body.append(c.custom === "profiles" ? renderProfilesCard(c) : renderCard(c));
+    const set = (open, save = true) => {
+      head.setAttribute("aria-expanded", String(open));
+      body.classList.toggle("collapsed", !open);
+      if (open) collapsed.delete(g.title); else collapsed.add(g.title);
+      if (save) store.set("ynabgui.collapsed", [...collapsed]);
+    };
+    head.onclick = () => set(head.getAttribute("aria-expanded") !== "true");
+    set(!collapsed.has(g.title), false);
+    heads.push(set);
+    groupSetters[g.title] = set;
+    sec.append(head, body);
+    cmdRoot.append(sec);
+  }
+  expandAll.onclick = () => heads.forEach((f) => f(true));
+  collapseAll.onclick = () => heads.forEach((f) => f(false));
+}
+
+function cardHeader(card, c) {
+  const [bcls, btxt] = BADGES[c.badge];
+  card.append(el("h3", {}, c.title, el("span", { className: `badge ${bcls}`, textContent: btxt })));
+  card.append(el("p", { textContent: c.desc }));
+  if (c.warn) card.append(el("div", { className: "warnbox", textContent: c.warn }));
+}
+
+function makeField(f, onChange) {
+  let input;
+  if (f.type === "select") {
+    input = el("select");
+    for (const [v, t] of f.options) input.append(el("option", { value: v, textContent: t }));
+    if (f.def) input.value = f.def;
+  } else if (f.type === "checkbox") {
+    input = el("input", { type: "checkbox" });
+    if (f.def) input.checked = true;
+  } else {
+    input = el("input", { type: f.type === "number" ? "number" : "text", placeholder: f.placeholder || "" });
+    if (f.min != null) input.min = f.min;
+    if (f.max != null) input.max = f.max;
+    if (f.def != null) input.value = f.def;
+    if (f.list) input.setAttribute("list", f.list);
+  }
+  const wrap = el("div", { className: "field" + (f.type === "checkbox" ? " check" : "") });
+  if (f.type === "checkbox") wrap.append(input, el("label", { textContent: f.label }));
+  else wrap.append(el("label", { textContent: f.label }), input);
+  if (f.help) wrap.append(el("span", { className: "help", textContent: f.help }));
+  if (onChange) { input.addEventListener("input", onChange); input.addEventListener("change", onChange); }
+  return { input, wrap };
+}
+
+function renderCard(c) {
+  const card = el("div", { className: "card", id: `card-${c.id}` });
+  cardHeader(card, c);
+
+  const inputs = {};
+  const cmd = el("code", { className: "cmd" });
+  const err = el("div", { className: "error" });
+  const values = () => {
+    const v = {};
+    for (const [k, i] of Object.entries(inputs)) v[k] = i.type === "checkbox" ? i.checked : i.value.trim();
+    return v;
+  };
+  let t;
+  const updatePreview = () => {
+    clearTimeout(t);
+    t = setTimeout(async () => {
+      try { const r = await api("/api/preview", { method: "POST", body: JSON.stringify({ command: c.id, values: values() }) }); cmd.textContent = r.cmdline; err.textContent = ""; }
+      catch (e) { cmd.textContent = ""; err.textContent = e.message; }
+    }, 150);
+  };
+
+  if (c.fields?.length) {
+    const box = el("div", { className: "fields" });
+    for (const f of c.fields) {
+      const { input, wrap } = makeField(f, updatePreview);
+      inputs[f.key] = input;
+      box.append(wrap);
+    }
+    card.append(box);
+  }
+  card.append(cmd);
+
+  const acts = el("div", { className: "actions" });
+  const runBtn = el("button", { className: "btn runbtn", textContent: c.canWrite ? "Preview (no changes)" : "Run" });
+  runBtn.onclick = () => run(c.id, values(), false);
+  acts.append(runBtn);
+  if (c.canWrite) {
+    const wBtn = el("button", { className: "btn danger runbtn", textContent: "Write to YNAB…" });
+    wBtn.onclick = () => { if (confirm(WRITE_TEXT[c.id])) run(c.id, values(), true); };
+    acts.append(wBtn);
+  }
+  card.append(acts, err);
+  card._inputs = inputs;
+  card._values = values;
+  cards[c.id] = card;
+  updatePreview();
+  return card;
+}
+
+// ----- Amazon accounts card: one row per saved login, plus "Sync all" -----
+let profileRows, pagesInput, analyzeAfter, newProfileInput, knownProfiles = [];
+
+function renderProfilesCard(c) {
+  const card = el("div", { className: "card", id: `card-${c.id}` });
+  cardHeader(card, c);
+  profileRows = el("div", {}, el("div", { className: "note", textContent: "Loading accounts…" }));
+  card.append(profileRows);
+
+  const box = el("div", { className: "fields" });
+  const pages = makeField({ key: "pages", label: "Pages of history", type: "number", def: store.get("ynabgui.pages", 5), min: 1, max: 50,
+    help: "Used for every sync. More pages reach further back but take longer." });
+  pagesInput = pages.input;
+  pagesInput.addEventListener("change", () => store.set("ynabgui.pages", Number(pagesInput.value) || 5));
+  const after = makeField({ key: "after", label: "Run \"Analyze – Amazon only\" afterwards", type: "checkbox", def: store.get("ynabgui.analyzeAfter", true),
+    help: "Rebuilds the Transactions list with the fresh orders." });
+  analyzeAfter = after.input;
+  analyzeAfter.addEventListener("change", () => store.set("ynabgui.analyzeAfter", analyzeAfter.checked));
+  box.append(pages.wrap, after.wrap);
+  card.append(box);
+
+  const acts = el("div", { className: "actions" });
+  const allBtn = el("button", { className: "btn runbtn", textContent: "Sync all accounts" });
+  allBtn.onclick = () => syncProfiles(knownProfiles.map((p) => p.name));
+  acts.append(allBtn);
+  card.append(acts);
+
+  const addLine = el("div", { className: "fields" });
+  const np = makeField({ key: "newProfile", label: "Add another account", type: "text", placeholder: "e.g. partner",
+    help: "Pick a short name (letters, numbers, - or _). A new browser window opens so you can sign in to that Amazon account." });
+  newProfileInput = np.input;
+  const addBtn = el("button", { className: "btn secondary runbtn", textContent: "Add & sync" });
+  addBtn.style.alignSelf = "center";
+  addBtn.onclick = () => {
+    const name = newProfileInput.value.trim();
+    if (!/^[A-Za-z0-9_-]{1,32}$/.test(name)) { alertInline("Account name may only use letters, numbers, - and _."); return; }
+    newProfileInput.value = "";
+    syncProfiles([name]);
+  };
+  addLine.append(np.wrap, addBtn);
+  card.append(addLine);
+  cards[c.id] = card;
+  return card;
+}
+
+function renderProfileRows(profiles) {
+  knownProfiles = profiles;
+  profileRows.innerHTML = "";
+  if (!profiles.length) {
+    profileRows.append(el("div", { className: "note", textContent: "No Amazon accounts yet. Add one below (\"primary\" for yours)." }));
+    return;
+  }
+  for (const p of profiles) {
+    const b = el("button", { className: "btn sm runbtn", textContent: "Sync" });
+    b.onclick = () => syncProfiles([p.name]);
+    b.disabled = running;
+    profileRows.append(el("div", { className: "profrow" },
+      el("span", { className: "pname", textContent: p.name }),
+      el("span", { className: "pwhen", textContent: p.exists ? `synced ${ago(p.modified)}` : "never synced" }),
+      b));
+  }
+}
+
+async function syncProfiles(names) {
+  if (!names.length) return;
+  const pages = pagesInput.value.trim() || "5";
+  const steps = names.map((n) => ({ command: "amazon-sync", values: { profile: n, pages }, label: `Amazon sync: ${n}` }));
+  if (analyzeAfter.checked) steps.push({ command: "analyze", values: cards["analyze"]._values(), label: "Analyze – Amazon only" });
+  await runSeq(steps);
+}
+
+// ---------- running + console ----------
+const con = document.getElementById("console");
+const jobstate = document.getElementById("jobstate");
+const jobcmd = document.getElementById("jobcmd");
+const stopBtn = document.getElementById("stopBtn");
+const enterbar = document.getElementById("enterbar");
+let currentJob = null, offset = 0, polling = false, running = false, jobDone = null;
+
+// Runs one command and resolves with its exit code when it finishes.
+// ----- collapsible output panel -----
+const expandBtn = document.getElementById("expandBtn");
+// Remembered per tab. The Transactions tab starts collapsed on smaller screens.
+const outKey = () => `ynabgui.outCollapsed.${typeof curTab === "string" ? curTab : "commands"}`;
+const outDefault = () => (typeof curTab === "string" && (curTab === "setup" || (curTab === "transactions" && window.innerWidth < 1400)));
+function setOutCollapsed(v, save = true) { document.body.classList.toggle("out-collapsed", v); if (save) store.set(outKey(), v); }
+function applyOutForTab() { setOutCollapsed(store.get(outKey(), outDefault()), false); }
+document.getElementById("collapseBtn").onclick = () => setOutCollapsed(true);
+expandBtn.onclick = () => setOutCollapsed(false);
+
+async function run(command, values, write, opts = {}) {
+  try {
+    const r = await api("/api/run", { method: "POST", body: JSON.stringify({ command, values, write }) });
+    currentJob = r.id; offset = 0;
+    if (opts.keep) con.textContent += `\n──────── ${opts.label || r.cmdline} ────────\n`;
+    else con.textContent = "";
+    jobcmd.textContent = r.cmdline + (opts.step ? `   (step ${opts.step})` : "");
+    jobstate.textContent = "Running…"; stopBtn.disabled = false;
+    expandBtn.dataset.state = "running";
+    setRunning(true);
+    const done = new Promise((res) => { jobDone = res; });
+    poll();
+    return await done;
+  } catch (e) { alertInline(e.message); return -1; }
+}
+
+// Runs several commands one after another; stops at the first failure.
+async function runSeq(steps) {
+  con.textContent = "";
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    const code = await run(s.command, s.values, false, { keep: true, label: s.label, step: steps.length > 1 ? `${i + 1} of ${steps.length}` : "" });
+    if (code !== 0) {
+      if (i < steps.length - 1) alertInline("Stopped here because this step didn't finish cleanly. The remaining steps were not run.");
+      return false;
+    }
+  }
+  if (steps.length > 1) jobstate.textContent = `All ${steps.length} steps finished`;
+  return true;
+}
+
+function alertInline(msg) { con.textContent += `\n[${msg}]\n`; con.scrollTop = con.scrollHeight; }
+function setRunning(on) {
+  running = on;
+  document.querySelectorAll("button.runbtn").forEach((b) => (b.disabled = on || b.dataset.valid === "0"));
+}
+
+async function poll() {
+  if (polling) return; polling = true;
+  let exit = -1;
+  try {
+    while (true) {
+      const j = await api(`/api/job?since=${offset}`);
+      if (j.id !== currentJob) break;
+      if (j.output) {
+        const atBottom = con.scrollHeight - con.scrollTop - con.clientHeight < 40;
+        con.textContent += j.output; offset = j.next;
+        if (atBottom) con.scrollTop = con.scrollHeight;
+      }
+      enterbar.classList.toggle("show", !!j.waitingForEnter);
+      if (j.waitingForEnter) setOutCollapsed(false); // needs you: bring the panel back
+      if (!j.running) {
+        exit = j.exitCode;
+        expandBtn.dataset.state = j.exitCode === 0 ? "ok" : "error";
+        if (j.exitCode !== 0) setOutCollapsed(false); // show the error
+        jobstate.textContent = j.exitCode === 0 ? "Finished" : `Stopped with error (code ${j.exitCode})`;
+        stopBtn.disabled = true; setRunning(false); enterbar.classList.remove("show");
+        await Promise.all([refreshStatus(), loadBundle(), refreshSetup()]);
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  } catch (e) { alertInline(e.message); setRunning(false); }
+  polling = false;
+  if (jobDone) { const f = jobDone; jobDone = null; f(exit); }
+}
+stopBtn.onclick = () => api("/api/stop", { method: "POST" }).catch((e) => alertInline(e.message));
+document.getElementById("enterBtn").onclick = () => { enterbar.classList.remove("show"); api("/api/enter", { method: "POST" }).catch((e) => alertInline(e.message)); };
+document.getElementById("clearBtn").onclick = () => { con.textContent = ""; };
+
+// ---------- status ----------
+function ago(iso) {
+  if (!iso) return "never";
+  const m = Math.round((Date.now() - new Date(iso)) / 60000);
+  if (m < 1) return "just now"; if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60); if (h < 36) return `${h} h ago`;
+  return `${Math.round(h / 24)} days ago`;
+}
+async function refreshStatus() {
+  try {
+    const s = await api("/api/status");
+    const chips = document.getElementById("chips"); chips.innerHTML = "";
+    const chip = (txt, cls = "") => chips.append(el("span", { className: `chip ${cls}`, textContent: txt }));
+    if (!s.tokenSet || !s.accountName) {
+      const c = el("button", { className: "chip bad", textContent: "Setup needed →" });
+      c.style.cursor = "pointer"; c.onclick = () => showTab("setup");
+      chips.append(c);
+    }
+    chip(s.tokenSet ? "YNAB token: set" : "YNAB: not connected", s.tokenSet ? "ok" : "bad");
+    chip(`Card account: ${s.accountName || "not set"}`, s.accountName ? "" : "bad");
+    if (s.profiles.length) for (const p of s.profiles) chip(`Amazon "${p.name}" synced ${ago(p.modified)}`);
+    else chip("Amazon: never synced", "bad");
+    chip(`Amazon-only analysis: ${ago(s.analysis.modified)}`);
+    chip(`Full-budget analysis: ${ago(s.reconcile.modified)}`);
+    if (profileRows) renderProfileRows(s.profiles);
+  } catch (e) {
+    document.getElementById("chips").innerHTML = "";
+    document.getElementById("chips").append(el("span", { className: "chip bad", textContent: e.message }));
+  }
+}
+
+// ---------- transactions ----------
+const money = (n) => (n < 0 ? "-$" : "+$") + Math.abs(n).toFixed(2);
+let categoryNames = new Set();
+let flashTx = null;
+
+async function loadBundle() {
+  const which = document.getElementById("txBundle").value;
+  const filter = document.getElementById("txFilter").value;
+  const box = document.getElementById("txTable"); const info = document.getElementById("txInfo");
+  let b;
+  try { b = await api(`/api/bundle?file=${which}`); } catch (e) { box.textContent = e.message; return; }
+  if (!b.exists) { box.innerHTML = ""; info.textContent = "This file doesn't exist yet. Run the matching Analyze command first."; return; }
+
+  const dl = document.getElementById("catlist"); dl.innerHTML = "";
+  categoryNames = new Set(b.categories.map((c) => c.name));
+  for (const c of b.categories) dl.append(el("option", { value: c.name, label: c.group }));
+
+  // Keep what you typed in other rows, and your scroll position, across refreshes.
+  const typed = {};
+  box.querySelectorAll("tr[data-tx]").forEach((tr) => {
+    const inp = tr.querySelector("input[type=text]"); const cb = tr.querySelector("input[type=checkbox]");
+    if (inp && inp.dataset.dirty === "1") typed[tr.dataset.tx] = { cat: inp.value, rem: cb ? cb.checked : false };
+  });
+  const scrollY = window.scrollY;
+
+  let rows = b.transactions;
+  if (filter === "matched") rows = rows.filter((r) => r.confidence);
+  if (filter === "unmatched") rows = rows.filter((r) => !r.confidence);
+  if (filter === "auto_apply" || filter === "needs_review") rows = rows.filter((r) => r.status === filter);
+  if (filter === "undecided") rows = rows.filter((r) => !r.selected && !r.splits);
+  if (filter === "approved_uncat") rows = rows.filter((r) => r.approvedInYnab);
+  const s = b.summary || {};
+  const decided = b.transactions.filter((r) => r.selected || r.splits).length;
+  info.textContent = `Built ${ago(b.modified)} · ${b.transactions.length} transactions · auto-apply ${s.autoApply ?? "?"} · needs review ${s.needsReview ?? "?"} · no match ${s.noMatch ?? "?"} · you've chosen ${decided}`;
+
+  const table = el("table");
+  const cg = el("colgroup");
+  for (const w of ["92px", "82px", "14%", "23%", "15%", ""]) { const c = el("col"); if (w) c.style.width = w; cg.append(c); }
+  table.append(cg);
+  table.append(el("thead", {}, el("tr", {}, ...["Date", "Amount", "Payee / account", "Amazon match", "Tool's plan", "Category · memo"].map((h) => el("th", { textContent: h })))));
+  const tb = el("tbody");
+  for (const r of rows) {
+    const tr = el("tr");
+    tr.dataset.tx = r.id;
+    tr.append(el("td", { textContent: r.date }));
+    tr.append(el("td", { className: "num" + (r.amount > 0 ? " pos" : ""), textContent: money(r.amount) }));
+    tr.append(el("td", {}, r.payee || "", el("div", { className: "items", textContent: [r.account, r.memo ? `memo: ${r.memo}` : ""].filter(Boolean).join(" · ") })));
+    const m = el("td");
+    if (r.confidence) {
+      m.append(el("span", { className: `pill p-${r.confidence}`, textContent: r.confidence }));
+      if (r.ambiguous) m.append(" ", el("span", { className: "pill p-amb", textContent: "ambiguous" }));
+      if (r.dayDelta != null) m.append(" ", el("span", { className: "items", textContent: `${r.dayDelta}d apart` }));
+      if (r.profile) m.append(" ", el("span", { className: "items", textContent: `· ${r.profile}` }));
+      m.append(el("div", { className: "items", textContent: r.items.length ? r.items.slice(0, 3).join(" · ") : `order ${r.orderNumber || "?"} (no item names)` }));
+    } else m.append(el("span", { className: "pill p-none", textContent: "no match" }));
+    tr.append(m);
+    const choice = r.splits ? `you split: ${r.splits.map((l) => `${l.category} $${Math.abs(l.amount).toFixed(2)}`).join(" + ")}`
+      : r.selected ? `you chose: ${r.selected}` : (r.proposed ? `suggests: ${r.proposed}` : "");
+    const plan = [r.status ? r.status.replace("_", " ") : "", choice].filter(Boolean).join(" · ");
+    const planTd = el("td", { className: "items", textContent: plan });
+    if (r.approvedInYnab) planTd.prepend(el("span", { className: "pill p-none", textContent: "approved · no category", title: "Already approved in YNAB but still uncategorized" }), el("br"));
+    tr.append(planTd);
+    tr.append(el("td", {}, rowEditor(r, which, typed[r.id])));
+    if (r.id === flashTx) tr.classList.add("flash");
+    tb.append(tr);
+    if (openSplits.has(r.id)) tb.append(splitRow(r, which));
+  }
+  table.append(tb);
+  box.innerHTML = ""; box.append(table);
+  if (!document.getElementById("tab-transactions").classList.contains("hidden")) window.scrollTo(0, scrollY);
+  if (flashTx) { const id = flashTx; flashTx = null; setTimeout(() => box.querySelector(`tr[data-tx="${CSS.escape(id)}"]`)?.classList.remove("flash"), 1500); }
+}
+
+// Inline editor: choose a category (local "decide", optional "remember") and memo buttons, without leaving the table.
+function rowEditor(r, which, kept) {
+  const wrap = el("div", { className: "rowedit" });
+  const inp = el("input", { type: "text", placeholder: r.proposed ? `e.g. ${r.proposed}` : "Category" });
+  inp.setAttribute("list", "catlist");
+  inp.value = kept ? kept.cat : (r.selected || "");
+  if (kept) inp.dataset.dirty = "1";
+  if (r.splits && !kept) inp.placeholder = "Split – or type one category";
+  inp.addEventListener("input", () => { inp.dataset.dirty = "1"; });
+  const save = el("button", { className: "btn sm runbtn", textContent: r.selected ? "Update" : "Save" });
+  save.disabled = running;
+  const line1 = el("div", { className: "line" }, inp);
+  const line2 = el("div", { className: "line" }, save);
+  let rem = null;
+  if (r.confidence) {
+    rem = el("input", { type: "checkbox" });
+    if (kept) rem.checked = kept.rem;
+    line2.append(el("label", { className: "small", title: "Also save a rule so future orders with these items get this category" }, rem, "remember for these items"));
+  }
+  if (r.proposed && !r.selected) {
+    const use = el("button", { className: "link", textContent: `use "${r.proposed}"` });
+    use.onclick = () => { inp.value = r.proposed; inp.dataset.dirty = "1"; inp.focus(); };
+    line2.append(use);
+  }
+  save.onclick = async () => {
+    const cat = inp.value.trim();
+    if (!cat) { alertInline("Type or pick a category first."); inp.focus(); return; }
+    if (!categoryNames.has(cat)) { alertInline(`"${cat}" isn't an exact category name. Pick one from the list as you type.`); inp.focus(); return; }
+    const steps = [{ command: "decide", values: { file: which, transactionId: r.id, category: cat }, label: `Decide: ${r.date} ${money(r.amount)} → ${cat}` }];
+    if (rem && rem.checked) steps.push({ command: "remember", values: { file: which, transactionId: r.id, category: cat, scope: "item" }, label: "Remember for these items" });
+    inp.dataset.dirty = "0";
+    flashTx = r.id;
+    await runSeq(steps);
+  };
+  const splitLink = el("button", { className: "link", textContent: r.splits ? "Edit split…" : "Split…" });
+  splitLink.title = "Split this charge across several categories";
+  splitLink.onclick = () => toggleSplit(r, which, splitLink.closest("tr"));
+  line2.append(splitLink);
+  wrap.append(line1, line2);
+
+  if (r.confidence) {
+    const memoLine = el("div", { className: "line" });
+    const pv = el("button", { className: "link", textContent: "Preview memo" });
+    pv.onclick = () => { if (!running) run("memo-apply", { file: which, minConfidence: "strong", transactionId: r.id }, false); };
+    const wr = el("button", { className: "link", textContent: "Write memo…", style: "color: var(--danger)" });
+    wr.onclick = () => { if (!running && confirm("Write the memo for this one transaction in YNAB? Category and approval stay unchanged.")) run("memo-apply", { file: which, minConfidence: "strong", transactionId: r.id }, true); };
+    memoLine.append(pv, el("span", { className: "items", textContent: "·" }), wr);
+    wrap.append(memoLine);
+  }
+  return wrap;
+}
+document.getElementById("txBundle").onchange = loadBundle;
+document.getElementById("txFilter").onchange = loadBundle;
+
+
+// ---------- split editor (one panel row under a transaction) ----------
+const openSplits = new Map(); // txid -> draft lines [{category, amount, memo}]
+const toCents = (v) => { const n = Number(String(v).replace(/[$,\s]/g, "")); return Number.isFinite(n) && n > 0 ? Math.round(n * 100) : 0; };
+const fmt = (c) => (c / 100).toFixed(2);
+const shortTitle = (t) => { const x = t.split(/[,|(]/)[0].trim(); return (x.length > 48 ? x.slice(0, 47).trimEnd() + "…" : x) || t.slice(0, 48); };
+
+// Lines from Amazon prices (price x qty). If this charge is the whole order, tax & shipping are spread in automatically.
+function priceLines(r, totalCents) {
+  const pr = r.prices;
+  const priced = (pr?.items || []).filter((i) => i.unitCents !== null);
+  if (!priced.length) return null;
+  let lines = priced.map((i) => ({ category: "", amount: fmt(i.unitCents * i.qty), memo: shortTitle(i.title) + (i.qty > 1 ? ` (x${i.qty})` : "") }));
+  const sum = priced.reduce((a, i) => a + i.unitCents * i.qty, 0);
+  const missing = pr.items.length - priced.length;
+  let note;
+  if (sum === totalCents) note = "Filled from Amazon prices. They match this charge exactly.";
+  else if (missing) note = `Filled from Amazon prices (before tax). ${missing} item${missing > 1 ? "s" : ""} had no price and ${missing > 1 ? "were" : "was"} left out: add a line if it's part of this charge, then click “Spread tax & shipping”.`;
+  else if (pr.totalCents === totalCents && sum > 0) {
+    let used = 0;
+    lines = lines.map((l, idx) => { const c = idx === lines.length - 1 ? totalCents - used : Math.round((toCents(l.amount) * totalCents) / sum); used += c; return { ...l, amount: fmt(c) }; });
+    note = "Filled from Amazon prices, with tax & shipping spread in proportion (this charge is the whole order).";
+  } else note = "Filled from Amazon prices (before tax). This charge doesn't equal the order total, so it may cover only some items: remove the ones not in this charge, then click “Spread tax & shipping”.";
+  return { lines, note };
+}
+
+function defaultDraft(r) {
+  if (!r.splits?.length && r.prices) {
+    const pl = priceLines(r, Math.round(Math.abs(r.amount) * 100));
+    if (pl && pl.lines.length >= 2) { const d = pl.lines; d.note = pl.note; return d; }
+  }
+  if (r.splits?.length) return r.splits.map((l) => ({ category: l.category, amount: fmt(Math.round(Math.abs(l.amount) * 100)), memo: l.memo || "" }));
+  if (r.items.length >= 2) return r.items.map((t) => ({ category: "", amount: "", memo: shortTitle(t) }));
+  return [{ category: r.selected || "", amount: "", memo: r.items[0] ? shortTitle(r.items[0]) : "" }, { category: "", amount: "", memo: "" }];
+}
+
+function toggleSplit(r, which, tr) {
+  const next = tr.nextElementSibling;
+  if (next && next.classList.contains("splitrow")) { next.remove(); openSplits.delete(r.id); return; }
+  openSplits.set(r.id, defaultDraft(r));
+  tr.after(splitRow(r, which));
+}
+
+function splitRow(r, which) {
+  const totalCents = Math.round(Math.abs(r.amount) * 100);
+  const draft = openSplits.get(r.id);
+  const row = el("tr", { className: "splitrow" });
+  const td = el("td", { colSpan: 6 });
+  const panel = el("div", { className: "splitpanel" });
+  row.append(td); td.append(panel);
+
+  const head = el("div", { className: "sphead" }, el("b", { textContent: `Split ${money(r.amount)} into categories` }));
+  if (r.orderNumber && r.profile) {
+    const openBtn = el("button", { className: "btn sm secondary runbtn", textContent: `Open in ${r.profile}'s Amazon ↗` });
+    openBtn.title = "Opens this order in the saved Amazon login for that account. Close that window when you're done.";
+    openBtn.onclick = () => run("amazon-open", { profile: r.profile, order: r.orderNumber }, false);
+    const priceBtn = el("button", { className: "btn sm secondary runbtn", textContent: r.prices ? "Refresh item prices" : "Get item prices" });
+    priceBtn.title = "Reads the item prices from the order page, then closes the window";
+    priceBtn.onclick = () => run("amazon-open", { profile: r.profile, order: r.orderNumber, close: true }, false);
+    head.append(openBtn, priceBtn);
+  }
+  if (r.orderUrl) head.append(el("a", { href: r.orderUrl, target: "_blank", rel: "noopener", textContent: "open in this browser instead", title: "Uses whichever Amazon account this browser is signed in to" }));
+  panel.append(head);
+
+  const pr = r.prices;
+  if (pr?.items?.length) {
+    const f = (c) => (c == null ? "?" : `$${fmt(c)}`);
+    const list = el("div", { className: "sprices" });
+    list.append(el("div", { className: "note", textContent: `From Amazon: items ${f(pr.subtotalCents)} · shipping ${f(pr.shippingCents)} · tax ${f(pr.taxCents)} · order total ${f(pr.totalCents)}` }));
+    for (const i of pr.items) list.append(el("div", { className: "items", textContent: `${i.unitCents == null ? "price not found" : "$" + fmt(i.unitCents)}${i.qty > 1 ? " × " + i.qty : ""} — ${i.title}` }));
+    panel.append(list);
+  } else {
+    panel.append(el("p", { className: "note", textContent: r.orderNumber && r.profile
+      ? "No item prices yet. Click “Get item prices” to read them from Amazon, or type the amounts yourself."
+      : "Type each amount from the order page. Tip: type prices before tax, then click “Spread tax & shipping” to share the difference in proportion." }));
+  }
+  const noteLine = el("div", { className: "note spnote" });
+  if (draft.note) noteLine.textContent = draft.note;
+  // Prices arrived after the panel was opened with empty amounts: fill them in.
+  if (pr && draft.every((l) => !toCents(l.amount))) {
+    const pl = priceLines(r, totalCents);
+    if (pl) { draft.splice(0, draft.length, ...pl.lines.map((l, idx) => ({ ...l, category: draft[idx]?.category || "" }))); noteLine.textContent = pl.note; }
+  }
+  panel.append(noteLine);
+
+  const linesBox = el("div", { className: "splines" });
+  const status = el("div", { className: "spstatus" });
+  const saveBtn = el("button", { className: "btn sm runbtn", textContent: "Save split" });
+
+  const recalc = () => {
+    const sum = draft.reduce((s, l) => s + toCents(l.amount), 0);
+    const left = totalCents - sum;
+    const badCats = draft.filter((l) => !categoryNames.has(l.category.trim())).length;
+    const msg = [`Lines total $${fmt(sum)} of $${fmt(totalCents)}`];
+    if (left !== 0) msg.push(left > 0 ? `$${fmt(left)} left to assign` : `$${fmt(-left)} too much`);
+    if (badCats) msg.push(`${badCats} line${badCats > 1 ? "s" : ""} need${badCats > 1 ? "" : "s"} a category from the list`);
+    if (draft.length < 2) msg.push("need at least 2 lines");
+    const ok = left === 0 && !badCats && draft.length >= 2 && draft.every((l) => toCents(l.amount) > 0);
+    status.textContent = ok ? `✓ Adds up to $${fmt(totalCents)}. Ready to save.` : msg.join(" · ");
+    status.classList.toggle("ok", ok);
+    saveBtn.disabled = !ok || running;
+    saveBtn.dataset.valid = ok ? "1" : "0";
+  };
+
+  const renderLines = () => {
+    linesBox.innerHTML = "";
+    linesBox.append(el("div", { className: "spline sphdr" }, el("span", { textContent: "Category" }), el("span", { textContent: "Amount" }), el("span", { textContent: "Memo (optional)" }), el("span")));
+    draft.forEach((l, i) => {
+      const cat = el("input", { type: "text", value: l.category, placeholder: "Category" }); cat.setAttribute("list", "catlist");
+      const amt = el("input", { type: "text", value: l.amount, placeholder: "0.00", inputMode: "decimal" });
+      const memo = el("input", { type: "text", value: l.memo, placeholder: "e.g. item name" });
+      const del = el("button", { className: "link", textContent: "✕", title: "Remove line" });
+      cat.oninput = () => { l.category = cat.value; recalc(); };
+      amt.oninput = () => { l.amount = amt.value; recalc(); };
+      amt.onblur = () => { const c = toCents(amt.value); if (c) { l.amount = fmt(c); amt.value = l.amount; } };
+      memo.oninput = () => { l.memo = memo.value; };
+      del.onclick = () => { draft.splice(i, 1); renderLines(); };
+      linesBox.append(el("div", { className: "spline" }, cat, el("span", { className: "amt" }, "$", amt), memo, del));
+    });
+    recalc();
+  };
+
+  const tools = el("div", { className: "sptools" });
+  const addBtn = el("button", { className: "link", textContent: "+ Add line" });
+  addBtn.onclick = () => { draft.push({ category: "", amount: "", memo: "" }); renderLines(); };
+  tools.append(addBtn);
+  if (r.items.length >= 2) {
+    const perItem = el("button", { className: "link", textContent: "One line per item" });
+    perItem.onclick = () => { draft.splice(0, draft.length, ...r.items.map((t) => ({ category: "", amount: "", memo: shortTitle(t) }))); renderLines(); };
+    tools.append(perItem);
+  }
+  if (pr?.items?.some((i) => i.unitCents !== null)) {
+    const fillBtn = el("button", { className: "link", textContent: "Fill from Amazon prices" });
+    fillBtn.onclick = () => { const pl = priceLines(r, totalCents); if (pl) { draft.splice(0, draft.length, ...pl.lines); noteLine.textContent = pl.note; renderLines(); } };
+    tools.append(fillBtn);
+  }
+  const spread = el("button", { className: "link", textContent: "Spread tax & shipping" });
+  spread.title = "Scales the amounts you typed so they add up to the charge, in proportion";
+  spread.onclick = () => {
+    const cents = draft.map((l) => toCents(l.amount));
+    const sum = cents.reduce((a, b) => a + b, 0);
+    if (!sum || cents.some((c) => c === 0)) { alertInline("Type an amount on every line first, then spread."); return; }
+    let used = 0;
+    draft.forEach((l, i) => {
+      const c = i === draft.length - 1 ? totalCents - used : Math.round((cents[i] * totalCents) / sum);
+      used += c; l.amount = fmt(c);
+    });
+    renderLines();
+  };
+  const rest = el("button", { className: "link", textContent: "Rest → last line" });
+  rest.onclick = () => {
+    if (!draft.length) return;
+    const others = draft.slice(0, -1).reduce((s, l) => s + toCents(l.amount), 0);
+    const left = totalCents - others;
+    if (left <= 0) { alertInline("The other lines already use the whole amount."); return; }
+    draft[draft.length - 1].amount = fmt(left); renderLines();
+  };
+  tools.append(spread, rest);
+
+  const acts = el("div", { className: "actions" });
+  saveBtn.onclick = async () => {
+    if (saveBtn.dataset.valid !== "1") return;
+    const splits = draft.map((l) => ({ category: l.category.trim(), amountCents: toCents(l.amount), memo: l.memo.trim() }));
+    flashTx = r.id;
+    const ok = await runSeq([{ command: "split", values: { file: which, transactionId: r.id, splits }, label: `Split ${r.date} ${money(r.amount)}` }]);
+    if (ok) { openSplits.delete(r.id); document.querySelector(`tr[data-tx="${CSS.escape(r.id)}"] + tr.splitrow`)?.remove(); }
+  };
+  acts.append(saveBtn);
+  if (r.splits?.length) {
+    const rm = el("button", { className: "btn sm secondary runbtn", textContent: "Remove saved split" });
+    rm.onclick = async () => {
+      flashTx = r.id;
+      const ok = await runSeq([{ command: "split", values: { file: which, transactionId: r.id, clear: true }, label: "Remove split" }]);
+      if (ok) { openSplits.delete(r.id); document.querySelector(`tr[data-tx="${CSS.escape(r.id)}"] + tr.splitrow`)?.remove(); }
+    };
+    acts.append(rm);
+  }
+  const cancel = el("button", { className: "link", textContent: "Close" });
+  cancel.onclick = () => { openSplits.delete(r.id); row.remove(); };
+  acts.append(cancel);
+
+  panel.append(linesBox, tools, status, acts);
+  renderLines();
+  return row;
+}
+
+
+// ---------- setup tab ----------
+const groupSetters = {};
+let setupState = null;
+
+async function refreshSetup() {
+  try { setupState = await api("/api/setup/status"); } catch (e) { setupState = null; }
+  renderSetup();
+  return setupState;
+}
+
+function stepCard(n, title, done, body) {
+  const card = el("div", { className: "card setupstep" + (done ? " done" : "") });
+  card.append(el("h3", {}, el("span", { className: "stepnum", textContent: done ? "✓" : String(n) }), title,
+    el("span", { className: `badge ${done ? "b-read" : "b-memo"}`, textContent: done ? "Done" : "To do" })));
+  for (const b of body) if (b) card.append(b);
+  return card;
+}
+
+function renderSetup() {
+  const root = document.getElementById("tab-setup");
+  root.innerHTML = "";
+  const s = setupState;
+  if (!s) { root.append(el("div", { className: "card", textContent: "Couldn't read the setup status." })); return; }
+  root.append(el("div", { className: "card" },
+    el("h3", { textContent: "Set up the helper" }),
+    el("p", { textContent: "A few one-time steps, about 5 minutes. Everything stays on this computer: your YNAB token, your Amazon logins and your order history are saved only in this folder." })));
+
+  root.append(stepCard(1, "Runtime", true, [el("p", { className: "note", textContent: `Running on ${s.runtime}.` })]));
+
+  const depsBtn = el("button", { className: "btn runbtn", textContent: "Install" });
+  depsBtn.onclick = () => runSetupInstall("deps");
+  root.append(stepCard(2, "Helper components", s.depsInstalled, [
+    el("p", { className: "note", textContent: s.depsInstalled ? "Installed." : "Downloads the libraries the helper needs (one time)." }),
+    s.depsInstalled ? null : el("div", { className: "actions" }, depsBtn)]));
+
+  const brBtn = el("button", { className: s.browserInstalled ? "btn secondary runbtn" : "btn runbtn", textContent: s.browserInstalled ? "Reinstall browser" : "Install browser (about 150 MB)" });
+  brBtn.onclick = () => runSetupInstall("browser");
+  brBtn.disabled = !s.depsInstalled || running;
+  root.append(stepCard(3, "Browser for Amazon", s.browserInstalled, [
+    el("p", { className: "note", textContent: "Amazon sync uses its own separate browser window, so your normal browser is never touched." }),
+    el("div", { className: "actions" }, brBtn)]));
+
+  // YNAB connection
+  const ynabDone = s.configured;
+  const tokenIn = el("input", { type: "password", placeholder: s.tokenSet ? "Saved. Leave blank to keep it" : "Paste your YNAB token", autocomplete: "off" });
+  tokenIn.style.width = "100%";
+  const planSel = el("select"); planSel.disabled = true;
+  const acctSel = el("select"); acctSel.disabled = true;
+  const connectBtn = el("button", { className: "btn secondary", textContent: s.tokenSet ? "Load my budgets" : "Connect" });
+  const saveBtn = el("button", { className: "btn", textContent: "Save settings" }); saveBtn.disabled = true;
+  const msg = el("div", { className: "note" });
+  const setMsg = (t, bad) => { msg.textContent = t; msg.style.color = bad ? "var(--danger)" : ""; };
+  const post = (path, extra = {}) => api(path, { method: "POST", body: JSON.stringify({ token: tokenIn.value.trim(), ...extra }) });
+
+  const loadAccounts = async () => {
+    acctSel.innerHTML = ""; acctSel.disabled = true; saveBtn.disabled = true;
+    try {
+      const { accounts } = await post("/api/setup/accounts", { planId: planSel.value });
+      const rank = (a) => (a.type === "creditCard" ? 0 : a.onBudget ? 1 : 2);
+      accounts.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+      for (const a of accounts) acctSel.append(el("option", { value: a.name, textContent: `${a.name}${a.type === "creditCard" ? "  (credit card)" : a.onBudget ? "" : "  (tracking)"}` }));
+      if (s.accountName && accounts.some((a) => a.name === s.accountName)) acctSel.value = s.accountName;
+      acctSel.disabled = false; saveBtn.disabled = !accounts.length;
+      setMsg(accounts.length ? "Pick the card you use for Amazon, then Save." : "No open accounts found in that budget.", !accounts.length);
+    } catch (e) { setMsg(e.message, true); }
+  };
+  connectBtn.onclick = async () => {
+    setMsg("Checking with YNAB…");
+    try {
+      const { plans } = await post("/api/setup/plans");
+      planSel.innerHTML = "";
+      planSel.append(el("option", { value: "last-used", textContent: "The budget I used most recently" }));
+      for (const p of plans) planSel.append(el("option", { value: p.id, textContent: p.name }));
+      if (s.planId && [...planSel.options].some((o) => o.value === s.planId)) planSel.value = s.planId;
+      planSel.disabled = false;
+      await loadAccounts();
+    } catch (e) { setMsg(e.message, true); }
+  };
+  planSel.onchange = loadAccounts;
+  saveBtn.onclick = async () => {
+    try {
+      await post("/api/setup/save", { planId: planSel.value, accountName: acctSel.value });
+      tokenIn.value = ""; setMsg("Saved. You're connected.");
+      await Promise.all([refreshSetup(), refreshStatus()]);
+    } catch (e) { setMsg(e.message, true); }
+  };
+
+  root.append(stepCard(4, "Connect YNAB", ynabDone, [
+    el("p", { textContent: "The helper reads and updates YNAB with a personal access token. To create one: sign in to YNAB on the web, open Account Settings, then Developer Settings, and click New Token. Copy it right away, because YNAB shows it only once. Treat it like a password." }),
+    el("p", {}, el("a", { href: "https://app.ynab.com/settings", target: "_blank", rel: "noopener", textContent: "Open YNAB account settings ↗" })),
+    ynabDone ? el("p", { className: "note", textContent: `Connected. Amazon card account: ${s.accountName}.` }) : null,
+    el("div", { className: "fields" },
+      el("div", { className: "field", style: "max-width:none;flex-basis:100%" }, el("label", { textContent: "YNAB token" }), tokenIn),
+      el("div", { className: "field" }, el("label", { textContent: "Budget" }), planSel),
+      el("div", { className: "field" }, el("label", { textContent: "Card you use for Amazon" }), acctSel)),
+    el("div", { className: "actions" }, connectBtn, saveBtn), msg]));
+
+  const goSync = el("button", { className: "btn secondary", textContent: "Go to Amazon accounts" });
+  goSync.onclick = () => {
+    showTab("commands");
+    groupSetters[GROUPS[1].title]?.(true);
+    requestAnimationFrame(() => cards["amazon-sync"]?.scrollIntoView({ behavior: "smooth", block: "center" }));
+  };
+  root.append(stepCard(5, "Add your Amazon account(s)", s.profiles > 0, [
+    el("p", { textContent: "On the Amazon sync card, add one account per Amazon login you use with this card (for example yours and your partner's). A browser window opens and you sign in yourself, including any verification code. The login is remembered for next time." }),
+    el("p", { className: "note", textContent: s.profiles ? `${s.profiles} Amazon account${s.profiles > 1 ? "s" : ""} saved.` : "No Amazon accounts yet." }),
+    el("div", { className: "actions" }, goSync)]));
+
+  const allReady = s.configured && s.browserInstalled && s.profiles > 0;
+  root.append(el("div", { className: "card" }, el("h3", { textContent: allReady ? "You're all set" : "Then, day to day" }),
+    el("p", { textContent: "Click Sync all accounts (with Analyze turned on), then work through the Transactions tab: add memos, pick categories or split charges, and finally send them with Apply categories. Every button that changes YNAB shows a preview first." })));
+}
+
+async function runSetupInstall(what) {
+  try {
+    const r = await api("/api/setup/install", { method: "POST", body: JSON.stringify({ what }) });
+    currentJob = r.id; offset = 0; con.textContent = ""; jobcmd.textContent = r.cmdline;
+    jobstate.textContent = "Running…"; stopBtn.disabled = false; expandBtn.dataset.state = "running";
+    setOutCollapsed(false);
+    setRunning(true);
+    const done = new Promise((res) => { jobDone = res; });
+    poll();
+    await done;
+  } catch (e) { alertInline(e.message); setOutCollapsed(false); }
+}
+
+// ---------- tabs (each tab remembers its own scroll position) ----------
+const tabScroll = {}; let curTab = "commands";
+function showTab(name) {
+  if (name === curTab) return;
+  tabScroll[curTab] = window.scrollY;
+  document.querySelectorAll("nav.tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+  for (const t of ["setup", "commands", "transactions", "guide"]) document.getElementById(`tab-${t}`).classList.toggle("hidden", t !== name);
+  curTab = name;
+  store.set("ynabgui.tab", name);
+  applyOutForTab();
+  requestAnimationFrame(() => window.scrollTo(0, tabScroll[name] || 0));
+}
+document.querySelectorAll("nav.tabs button").forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
+
+// ---------- start ----------
+if (!TOKEN) {
+  document.body.innerHTML = "<p style='padding:24px'>Open this page from the \"Start GUI\" launcher. It adds the session key the page needs.</p>";
+} else {
+  renderCommands(); refreshStatus(); loadBundle(); applyOutForTab();
+  showTab(store.get("ynabgui.tab", "commands"));
+  // First run (or settings missing): open the Setup tab.
+  refreshSetup().then((st) => { if (st && !st.configured) showTab("setup"); });
+  api("/api/job").then((j) => { if (j.id && j.running) { currentJob = j.id; jobcmd.textContent = j.cmdline; jobstate.textContent = "Running…"; stopBtn.disabled = false; setRunning(true); poll(); } }).catch(() => {});
+}
+</script>
+</body>
+</html>

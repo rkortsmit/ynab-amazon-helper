@@ -106,6 +106,19 @@ export class YnabClient {
     return response.data.transactions.map(parseTransaction);
   }
 
+  async getUncategorizedTransactions(planId: string, sinceDate: string): Promise<YnabTransaction[]> {
+    const params = new URLSearchParams({
+      since_date: sinceDate,
+      type: "uncategorized",
+    });
+
+    const response = await this.request<YnabEnvelope<{ transactions: YnabApiTransaction[] }>>(
+      `/plans/${planId}/transactions?${params.toString()}`,
+    );
+
+    return response.data.transactions.map(parseTransaction);
+  }
+
   async getTransactions(planId: string, sinceDate: string): Promise<YnabTransaction[]> {
     const params = new URLSearchParams({
       since_date: sinceDate,
@@ -130,6 +143,31 @@ export class YnabClient {
     return response.data.transactions.map(parseTransaction);
   }
 
+  async getTransaction(planId: string, transactionId: string): Promise<YnabTransaction> {
+    const response = await this.request<YnabEnvelope<{ transaction: YnabApiTransaction }>>(
+      `/plans/${planId}/transactions/${transactionId}`,
+    );
+
+    return parseTransaction(response.data.transaction);
+  }
+
+  // Live check used before writing a split: current amount, memo, and whether it is already split.
+  async getTransactionSplitState(
+    planId: string,
+    transactionId: string,
+  ): Promise<{ amountMilliunits: number; deleted: boolean; memo: string | null; subtransactionCount: number }> {
+    const response = await this.request<
+      YnabEnvelope<{ transaction: { amount: number; deleted: boolean; memo?: string | null; subtransactions?: unknown[] } }>
+    >(`/plans/${planId}/transactions/${transactionId}`);
+    const t = response.data.transaction;
+    return {
+      amountMilliunits: t.amount,
+      deleted: t.deleted,
+      memo: t.memo ?? null,
+      subtransactionCount: Array.isArray(t.subtransactions) ? t.subtransactions.length : 0,
+    };
+  }
+
   async updateTransaction(
     planId: string,
     transactionId: string,
@@ -137,6 +175,8 @@ export class YnabClient {
       categoryId?: string | null;
       approved?: boolean;
       memo?: string | null;
+      // Turns an unsplit transaction into a split. YNAB does not allow changing an existing split.
+      subtransactions?: Array<{ amountMilliunits: number; categoryId: string; memo?: string | null }>;
     },
   ): Promise<YnabTransaction> {
     const response = await fetch(`https://api.ynab.com/v1/plans/${planId}/transactions/${transactionId}`, {
@@ -148,9 +188,14 @@ export class YnabClient {
       },
       body: JSON.stringify({
         transaction: {
-          category_id: updates.categoryId,
+          category_id: updates.subtransactions ? null : updates.categoryId,
           approved: updates.approved,
           memo: updates.memo,
+          subtransactions: updates.subtransactions?.map((line) => ({
+            amount: line.amountMilliunits,
+            category_id: line.categoryId,
+            memo: line.memo ?? undefined,
+          })),
         },
       }),
     });
@@ -180,6 +225,7 @@ type YnabApiTransaction = {
   category_id?: string | null;
   category_name?: string | null;
   deleted: boolean;
+  transfer_account_id?: string | null;
 };
 
 function parseTransaction(transaction: YnabApiTransaction): YnabTransaction {
@@ -199,7 +245,15 @@ function parseTransaction(transaction: YnabApiTransaction): YnabTransaction {
     categoryId: transaction.category_id ?? null,
     categoryName: transaction.category_name ?? null,
     deleted: transaction.deleted,
+    transferAccountId: transaction.transfer_account_id ?? null,
   };
+}
+
+// True when a transaction carries a real category that is worth learning from
+// (not YNAB's "Uncategorized" placeholder and not a split parent).
+export function hasRealCategory(transaction: YnabTransaction): boolean {
+  const name = (transaction.categoryName ?? "").trim();
+  return Boolean(transaction.categoryId) && Boolean(name) && !/^uncategori[sz]ed$/i.test(name) && !/^split\b/i.test(name);
 }
 
 export async function resolveAccount(client: YnabClient, planId: string, accountId?: string | null, accountName?: string | null) {

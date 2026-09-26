@@ -9,6 +9,7 @@ import type {
   YnabTransaction,
 } from "./types.ts";
 import { isAmazonishTransaction } from "./match.ts";
+import { hasRealCategory } from "./ynab.ts";
 import { normalizeText, normalizeTitle } from "./utils.ts";
 
 type GenericHistoryExample = {
@@ -156,6 +157,7 @@ function buildHistoryExample(transaction: YnabTransaction): GenericHistoryExampl
     transaction.amountCents === 0 ||
     !transaction.categoryId ||
     !transaction.categoryName ||
+    !hasRealCategory(transaction) ||
     isAmazonishTransaction(transaction)
   ) {
     return null;
@@ -462,7 +464,7 @@ export function buildGenericAnalysisTransactions(input: {
   history: GenericHistory;
 }): AnalysisTransaction[] {
   return input.transactions
-    .filter((transaction) => !transaction.deleted && !transaction.approved && transaction.amountCents !== 0)
+    .filter((transaction) => !transaction.deleted && transaction.amountCents !== 0)
     .filter((transaction) => !isAmazonishTransaction(transaction))
     .map((transaction) => {
       const payee = transactionPayee(transaction);
