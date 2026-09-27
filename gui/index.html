@@ -143,6 +143,60 @@
   .spnote { margin: 4px 0; color: var(--accent); }
   .spstatus { font-size: 13px; color: var(--warn); margin-bottom: 8px; }
   .spstatus.ok { color: var(--ok); }
+
+  /* ---------- phone access card ---------- */
+  .qrwrap { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; margin: 10px 0; }
+  .qrbox { width: 190px; height: 190px; background: #fff; border-radius: 8px; padding: 6px; border: 1px solid var(--line); }
+  .qrbox svg { width: 100%; height: 100%; display: block; }
+  .phoneurl { font-family: Consolas, monospace; font-size: 12px; word-break: break-all; background: var(--code); padding: 4px 6px; border-radius: 4px; display: inline-block; margin: 2px 0; }
+
+  /* ---------- small screens (phones) ---------- */
+  @media (max-width: 700px) {
+    body { font-size: 15px; }
+    header { padding: 12px 12px 0; }
+    h1 { font-size: 18px; }
+    header .sub { display: none; }
+    .chips { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; }
+    .chip { white-space: nowrap; }
+    nav.tabs { padding: 0 6px; overflow-x: auto; }
+    nav.tabs button { padding: 10px 10px; white-space: nowrap; }
+    main, body.out-collapsed main { padding: 12px 10px 90px; gap: 12px; }
+    .card { padding: 12px; }
+    .field { max-width: none; flex-basis: 100%; }
+    button.link { padding: 6px 0; }
+    .cmdbar { justify-content: flex-start; }
+    /* transactions become cards */
+    #txTable table, #txTable tbody { display: block; border: 0; background: none; }
+    #txTable thead, #txTable colgroup { display: none; }
+    #txTable tr[data-tx] { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+    #txTable tr[data-tx] > td { display: block; border: 0; padding: 2px 0; }
+    #txTable tr[data-tx] > td:nth-child(1) { grid-column: 1; color: var(--muted); }
+    #txTable tr[data-tx] > td:nth-child(2) { grid-column: 2; font-weight: 700; font-size: 16px; }
+    #txTable tr[data-tx] > td:nth-child(n+3) { grid-column: 1 / -1; }
+    #txTable tr[data-tx] > td:nth-child(6) { margin-top: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
+    #txTable tr.splitrow { display: block; margin: -6px 0 10px; }
+    #txTable tr.splitrow > td { display: block; max-width: none; padding: 0; background: none; }
+    .rowedit input[type=text] { font-size: 16px; padding: 7px 8px; }
+    .rowedit .line { gap: 10px; }
+    .spline { grid-template-columns: 1fr 110px 28px; grid-template-areas: "cat cat cat" "amt memo del"; }
+    .spline.sphdr { display: none; }
+    .spline > input[list] { grid-area: cat; }
+    .spline > .amt { grid-area: amt; }
+    .spline > input:not([list]) { grid-area: memo; }
+    .spline > button { grid-area: del; }
+    .spline input { font-size: 16px; }
+    .sphead .btn { margin: 4px 0 0; }
+    /* send bar */
+    .sendbar { gap: 8px; padding: 8px 10px; border-radius: 12px 12px 0 0; margin-left: -10px; margin-right: -10px; }
+    .sendbar .sendinfo { flex-basis: 100%; min-width: 0; }
+    .sendbar .sendinfo b { font-size: 14px; }
+    .sendbar #sendDetail, .sendbar .small { display: none; }
+    .sendbar .btn { flex: 1; padding: 9px 6px; }
+    /* output: a floating button that opens a bottom sheet */
+    .console-wrap { position: fixed !important; top: auto !important; left: 0; right: 0; bottom: 0; height: 72vh !important; z-index: 30; border-radius: 14px 14px 0 0; box-shadow: 0 -8px 30px rgba(0,0,0,.3); }
+    body.out-collapsed .console-wrap { left: auto; right: 10px; bottom: 104px; height: auto !important; width: auto; border-radius: 999px; box-shadow: 0 4px 14px rgba(0,0,0,.18); }
+    body.out-collapsed .outstrip { writing-mode: horizontal-tb !important; padding: 10px 14px; width: auto; }
+  }
 </style>
 </head>
 <body>
@@ -550,7 +604,8 @@ let currentJob = null, offset = 0, polling = false, running = false, jobDone = n
 const expandBtn = document.getElementById("expandBtn");
 // Remembered per tab. The Transactions tab starts collapsed on smaller screens.
 const outKey = () => `ynabgui.outCollapsed.${typeof curTab === "string" ? curTab : "commands"}`;
-const outDefault = () => (typeof curTab === "string" && (curTab === "setup" || (curTab === "transactions" && window.innerWidth < 1400)));
+const isPhone = () => window.matchMedia("(max-width: 700px)").matches;
+const outDefault = () => isPhone() || (typeof curTab === "string" && (curTab === "setup" || (curTab === "transactions" && window.innerWidth < 1400)));
 function setOutCollapsed(v, save = true) { document.body.classList.toggle("out-collapsed", v); if (save) store.set(outKey(), v); }
 function applyOutForTab() { setOutCollapsed(store.get(outKey(), outDefault()), false); }
 document.getElementById("collapseBtn").onclick = () => setOutCollapsed(true);
@@ -646,6 +701,8 @@ async function refreshStatus() {
     }
     chip(s.tokenSet ? "YNAB token: set" : "YNAB: not connected", s.tokenSet ? "ok" : "bad");
     chip(`Card account: ${s.accountName || "not set"}`, s.accountName ? "" : "bad");
+    if (phoneState?.viewer === "phone") chip("📱 Using from your phone", "ok");
+    else if (phoneState?.running) chip("📱 Phone access on", "ok");
     if (s.profiles.length) for (const p of s.profiles) chip(`Amazon "${p.name}" synced ${ago(p.modified)}`);
     else chip("Amazon: never synced", "bad");
     chip(`Amazon-only analysis: ${ago(s.analysis.modified)}`);
@@ -978,6 +1035,7 @@ let setupState = null;
 
 async function refreshSetup() {
   try { setupState = await api("/api/setup/status"); } catch (e) { setupState = null; }
+  await refreshPhone();
   renderSetup();
   return setupState;
 }
@@ -1001,10 +1059,10 @@ function renderSetup() {
 
   root.append(stepCard(1, "Runtime", true, [el("p", { className: "note", textContent: `Running on ${s.runtime}.` })]));
 
-  const depsBtn = el("button", { className: "btn runbtn", textContent: "Install" });
+  const depsBtn = el("button", { className: "btn runbtn", textContent: "Install / repair" });
   depsBtn.onclick = () => runSetupInstall("deps");
   root.append(stepCard(2, "Helper components", s.depsInstalled, [
-    el("p", { className: "note", textContent: s.depsInstalled ? "Installed." : "Downloads the libraries the helper needs (one time)." }),
+    el("p", { className: "note", textContent: s.depsInstalled ? "Installed." : "Downloads the libraries the helper needs. If an earlier install was interrupted or incomplete, this repairs it." }),
     s.depsInstalled ? null : el("div", { className: "actions" }, depsBtn)]));
 
   const brBtn = el("button", { className: s.browserInstalled ? "btn secondary runbtn" : "btn runbtn", textContent: s.browserInstalled ? "Reinstall browser" : "Install browser (about 150 MB)" });
@@ -1080,9 +1138,61 @@ function renderSetup() {
     el("p", { className: "note", textContent: s.profiles ? `${s.profiles} Amazon account${s.profiles > 1 ? "s" : ""} saved.` : "No Amazon accounts yet." }),
     el("div", { className: "actions" }, goSync)]));
 
+  root.append(phoneCard());
+
   const allReady = s.configured && s.browserInstalled && s.profiles > 0;
   root.append(el("div", { className: "card" }, el("h3", { textContent: allReady ? "You're all set" : "Then, day to day" }),
     el("p", { textContent: "Click Sync all accounts (with Analyze turned on), then work through the Transactions tab: add memos, pick categories or split charges, and finally click Send to YNAB in the bar at the bottom of that tab. Every button that changes YNAB shows a preview first." })));
+}
+
+// ----- phone access -----
+let phoneState = null;
+async function refreshPhone() {
+  try { phoneState = await api("/api/phone"); } catch { phoneState = null; }
+  return phoneState;
+}
+function phoneCard() {
+  const p = phoneState;
+  const card = el("div", { className: "card setupstep" + (p?.running ? " done" : "") });
+  card.append(el("h3", {}, el("span", { className: "stepnum", textContent: p?.running ? "✓" : "6" }), "Phone access",
+    el("span", { className: `badge ${p?.running ? "b-read" : "b-local"}`, textContent: p?.running ? "On" : "Optional" })));
+  if (!p) { card.append(el("p", { className: "note", textContent: "Couldn't read the phone access status." })); return card; }
+  if (p.viewer === "phone") {
+    card.append(el("p", { textContent: "You're using the helper from your phone. Tip: add this page to your home screen (Share → Add to Home Screen) so it opens like an app. Amazon sign-ins still happen on the computer." }));
+    return card;
+  }
+  card.append(el("p", { textContent: "Use the helper from your phone's browser while this computer is on and the helper is running. Your phone has to be on the same home Wi-Fi (or connected with Tailscale)." }));
+  const msg = el("div", { className: "note" });
+  const act = async (body, label) => {
+    msg.textContent = label; msg.style.color = "";
+    try { phoneState = await api("/api/phone", { method: "POST", body: JSON.stringify(body) }); renderSetup(); refreshStatus(); }
+    catch (e) { msg.textContent = e.message; msg.style.color = "var(--danger)"; }
+  };
+  if (!p.running) {
+    const on = el("button", { className: "btn", textContent: "Turn on phone access" });
+    on.onclick = () => act({ enabled: true }, "Starting…");
+    card.append(el("p", { className: "note", textContent: "The first time, Windows may ask whether Bun can use the network. Choose Private networks (your home network) and click Allow." }),
+      el("div", { className: "actions" }, on), msg);
+    return card;
+  }
+  if (!p.urls.length) {
+    card.append(el("p", { className: "note", textContent: "Phone access is on, but this computer doesn't seem to be on a home network right now." }));
+  } else {
+    const box = el("div", { className: "qrbox" }); box.innerHTML = p.qr || ""; // SVG generated by the local helper
+    const info = el("div", {}, el("p", { textContent: "Scan this with your phone's camera and open the link." }),
+      el("p", { className: "note", textContent: "Or type one of these into the phone's browser:" }));
+    for (const u of p.urls) info.append(el("div", {}, el("span", { className: "phoneurl", textContent: u.url }), el("span", { className: "note", textContent: `  (${u.kind})` })));
+    info.append(el("p", { className: "note", textContent: "The link has a private key built in and keeps working after restarts. Bookmark it or add it to your home screen. If this computer's address changes, scan again." }));
+    card.append(el("div", { className: "qrwrap" }, box, info));
+  }
+  const reset = el("button", { className: "btn secondary", textContent: "Make a new phone link" });
+  reset.title = "Stops the old link from working, for example if you shared it by mistake";
+  reset.onclick = () => { if (confirm("Make a new phone link? The old link (and any bookmark of it) will stop working.")) act({ reset: true }, "Making a new link…"); };
+  const off = el("button", { className: "btn secondary", textContent: "Turn off phone access" });
+  off.onclick = () => act({ enabled: false }, "Turning off…");
+  card.append(el("div", { className: "actions" }, reset, off), msg,
+    el("p", { className: "note", textContent: "Anyone on your home Wi-Fi who has this link could use the helper, so keep it to yourself and don't turn this on over public Wi-Fi. Amazon sign-ins and security checks still have to be done at this computer." }));
+  return card;
 }
 
 async function runSetupInstall(what) {
@@ -1167,7 +1277,7 @@ if (!TOKEN) {
   renderCommands(); refreshStatus(); loadBundle(); applyOutForTab();
   showTab(store.get("ynabgui.tab", "commands"));
   // First run (or settings missing): open the Setup tab.
-  refreshSetup().then((st) => { if (st && !st.configured) showTab("setup"); });
+  refreshSetup().then((st) => { if (st && !st.configured) showTab("setup"); refreshStatus(); });
   api("/api/job").then((j) => { if (j.id && j.running) { currentJob = j.id; jobcmd.textContent = j.cmdline; jobstate.textContent = "Running…"; stopBtn.disabled = false; setRunning(true); poll(); } }).catch(() => {});
 }
 </script>

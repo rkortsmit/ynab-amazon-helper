@@ -2,6 +2,13 @@
 # Mac / Linux launcher for the YNAB Amazon Helper GUI.
 cd "$(dirname "$0")" || exit 1
 
+if [ ! -f package.json ] || [ ! -f gui/server.ts ]; then
+  echo "This launcher needs to stay inside the YNAB Amazon Helper folder, next to package.json."
+  echo "It is running from: $(pwd)"
+  echo "Open the helper folder and start it there (use an alias if you want it elsewhere)."
+  exit 1
+fi
+
 if ! command -v bun >/dev/null 2>&1; then
   if [ -x "$HOME/.bun/bin/bun" ]; then
     export PATH="$HOME/.bun/bin:$PATH"
@@ -15,9 +22,9 @@ if ! command -v bun >/dev/null 2>&1; then
   fi
 fi
 
-if [ ! -d node_modules/playwright ]; then
+if [ ! -f node_modules/playwright/lib/program.js ] || [ ! -f node_modules/playwright-core/cli.js ]; then
   echo "Installing the helper's components. This happens only once..."
-  bun install || { echo "Installing the components failed."; exit 1; }
+  bun install --force || { echo "Installing the components failed."; exit 1; }
 fi
 
 exec bun gui/server.ts

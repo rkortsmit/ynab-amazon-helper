@@ -57,6 +57,16 @@ Saving a category or split on the Transactions tab only records it on your compu
 
 ![Splitting a charge with Amazon prices](screenshots/04-split-with-amazon-prices.png)
 
+## Use It From Your Phone
+
+The helper runs on your computer, but you can use it from your phone's browser while that computer is on:
+
+1. On the **Setup** tab, click **Turn on phone access**. The first time, Windows may ask whether Bun can use the network. Choose **Private networks** and click Allow.
+2. Scan the QR code with your phone's camera. Your phone needs to be on the same home Wi-Fi.
+3. Optionally, add the page to your home screen so it opens like an app.
+
+On a phone, transactions show as cards, and the Send to YNAB bar stays at the bottom. Amazon sign-ins and security checks still happen on the computer. Phone access is off until you turn it on, and the phone link has its own private key, which you can replace at any time. Only turn it on at home, not on public Wi-Fi. To use it away from home, connect your phone and computer with a private VPN such as [Tailscale](https://tailscale.com).
+
 ## Privacy and Safety
 
 Everything runs locally:

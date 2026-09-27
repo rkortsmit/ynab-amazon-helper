@@ -3,12 +3,14 @@
 // Listens on 127.0.0.1 only, and every API call must carry a random per-session token,
 // so other websites and other computers cannot trigger commands.
 
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
+import { networkInterfaces } from "node:os";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync, statSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, statSync, readdirSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { qrcodegen } from "./qrcodegen.ts";
 
 const guiDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(guiDir, "..");
@@ -282,10 +284,16 @@ async function browserInstalled(): Promise<boolean> {
   return installed;
 }
 
+// A half-finished install leaves node_modules/playwright without its files, so check a few that must exist.
+function componentsComplete(): boolean {
+  const nm = join(rootDir, "node_modules");
+  return ["playwright/cli.js", "playwright/lib/program.js", "playwright/index.js", "playwright-core/cli.js", "playwright-core/package.json"].every((f) => existsSync(join(nm, f)));
+}
+
 async function setupStatus() {
   const env = readEnvFile();
   const s = status();
-  const depsInstalled = existsSync(join(rootDir, "node_modules", "playwright"));
+  const depsInstalled = componentsComplete();
   return {
     runtime: (process.versions as any).bun ? `Bun ${(process.versions as any).bun}` : `Node ${process.versions.node}`,
     depsInstalled,
@@ -439,11 +447,13 @@ async function readJson(req: IncomingMessage): Promise<any> {
   return body ? JSON.parse(body) : {};
 }
 
-function handler(port: number) {
+function handler(port: number, mode: "local" | "phone" = "local") {
   const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+  const hostOk = (host: string) => allowedHosts.has(host) || (mode === "phone" && isPrivateHost(host, port));
+  const tokenOk = (t: unknown) => (mode === "phone" ? Boolean(phoneToken) && t === phoneToken : t === TOKEN);
   return async (req: IncomingMessage, res: ServerResponse) => {
     try {
-      if (!allowedHosts.has(req.headers.host ?? "")) return send(res, 403, { error: "Bad host." });
+      if (!hostOk(req.headers.host ?? "")) return send(res, 403, { error: "Bad host." });
       const url = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
 
       if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
@@ -451,7 +461,19 @@ function handler(port: number) {
       }
 
       if (!url.pathname.startsWith("/api/")) return send(res, 404, { error: "Not found." });
-      if (req.headers["x-token"] !== TOKEN) return send(res, 403, { error: "Missing or wrong session token. Reopen the GUI from the launcher." });
+      if (!tokenOk(req.headers["x-token"])) {
+        return send(res, 403, { error: mode === "phone" ? "This phone link is no longer valid. Scan the QR code on the computer again." : "Missing or wrong session token. Reopen the GUI from the launcher." });
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/phone") return send(res, 200, { ...phoneInfo(), viewer: mode });
+      if (req.method === "POST" && url.pathname === "/api/phone") {
+        if (mode !== "local") throw new Error("Phone access can only be changed on the computer.");
+        const body = await readJson(req);
+        if (body.reset === true) resetPhoneToken();
+        if (body.enabled === true) await startPhone();
+        if (body.enabled === false) stopPhone();
+        return send(res, 200, { ...phoneInfo(), viewer: mode });
+      }
 
       if (req.method === "GET" && url.pathname === "/api/status") return send(res, 200, status());
       if (req.method === "GET" && url.pathname === "/api/bundle") return send(res, 200, bundle(url.searchParams.get("file") ?? "analysis"));
@@ -510,7 +532,7 @@ function handler(port: number) {
         const body = await readJson(req);
         const what = String(body.what ?? "");
         const raw =
-          what === "deps" ? { argv: ["install"], label: "bun install" }
+          what === "deps" ? { argv: ["install", "--force"], label: "bun install --force" }
           : what === "browser" ? { argv: ["x", "playwright", "install", "chromium"], label: "bunx playwright install chromium" }
           : null;
         if (!raw) throw new Error("Unknown setup step.");
@@ -562,6 +584,95 @@ function openBrowser(url: string) {
   spawn(cmd, args, { detached: true, stdio: "ignore", windowsHide: true }).unref();
 }
 
+// ---------- phone access (optional, off by default) ----------
+// A second listener on the home network, with its own long-lived key that only works there.
+const settingsPath = join(dataDir, "gui-settings.json");
+type GuiSettings = { phoneEnabled?: boolean; phoneToken?: string; phonePort?: number };
+function readSettings(): GuiSettings {
+  try {
+    return existsSync(settingsPath) ? JSON.parse(readFileSync(settingsPath, "utf8")) : {};
+  } catch {
+    return {};
+  }
+}
+function writeSettings(update: GuiSettings) {
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(settingsPath, JSON.stringify({ ...readSettings(), ...update }, null, 2) + "\n", "utf8");
+}
+
+let phoneServer: Server | null = null;
+let phonePort = 0;
+let phoneToken: string | null = readSettings().phoneToken ?? null;
+
+function privateKind(ip: string): string | null {
+  const p = ip.split(".").map(Number);
+  if (p.length !== 4 || p.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+  if (p[0] === 10 || (p[0] === 192 && p[1] === 168) || (p[0] === 172 && p[1] >= 16 && p[1] <= 31)) return "home network";
+  if (p[0] === 100 && p[1] >= 64 && p[1] <= 127) return "Tailscale";
+  return null;
+}
+function isPrivateHost(host: string, port: number): boolean {
+  const m = host.match(/^(\d{1,3}(?:\.\d{1,3}){3}):(\d+)$/);
+  return Boolean(m) && Number(m![2]) === port && privateKind(m![1]) !== null;
+}
+function lanAddresses(): Array<{ address: string; kind: string }> {
+  const out: Array<{ address: string; kind: string }> = [];
+  for (const list of Object.values(networkInterfaces())) {
+    for (const a of list ?? []) {
+      if (a.family !== "IPv4" || a.internal) continue;
+      const kind = privateKind(a.address);
+      if (kind) out.push({ address: a.address, kind });
+    }
+  }
+  return out.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "home network" ? -1 : 1));
+}
+function resetPhoneToken() {
+  phoneToken = randomBytes(18).toString("base64url");
+  writeSettings({ phoneToken });
+}
+function qrSvg(text: string): string {
+  const qr = qrcodegen.QrCode.encodeText(text, qrcodegen.QrCode.Ecc.MEDIUM);
+  const border = 3;
+  const n = qr.size + border * 2;
+  let d = "";
+  for (let y = 0; y < qr.size; y++) for (let x = 0; x < qr.size; x++) if (qr.getModule(x, y)) d += `M${x + border},${y + border}h1v1h-1z`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${n} ${n}" shape-rendering="crispEdges"><rect width="100%" height="100%" fill="#fff"/><path d="${d}" fill="#000"/></svg>`;
+}
+function phoneInfo() {
+  const running = Boolean(phoneServer);
+  const urls = running && phoneToken ? lanAddresses().map((a) => ({ kind: a.kind, url: `http://${a.address}:${phonePort}/?t=${phoneToken}` })) : [];
+  return { enabled: readSettings().phoneEnabled === true, running, port: running ? phonePort : null, urls, qr: urls[0] ? qrSvg(urls[0].url) : null };
+}
+function startPhone(): Promise<void> {
+  if (phoneServer) return Promise.resolve();
+  if (!phoneToken) resetPhoneToken();
+  const preferred = readSettings().phonePort ?? BASE_PORT + 1000;
+  return new Promise((resolve, reject) => {
+    const tryPort = (port: number, left: number) => {
+      const srv = createServer(handler(port, "phone"));
+      srv.once("error", (err: NodeJS.ErrnoException) => {
+        if (err.code === "EADDRINUSE" && left > 0) return tryPort(port + 1, left - 1);
+        reject(new Error(`Couldn't start phone access: ${err.message}`));
+      });
+      srv.listen(port, "0.0.0.0", () => {
+        phoneServer = srv;
+        phonePort = port;
+        writeSettings({ phoneEnabled: true, phonePort: port });
+        const first = phoneInfo().urls[0];
+        console.log(first ? `Phone access is on: ${first.url}` : "Phone access is on, but no home-network address was found.");
+        resolve();
+      });
+    };
+    tryPort(preferred, 10);
+  });
+}
+function stopPhone() {
+  phoneServer?.close();
+  phoneServer = null;
+  writeSettings({ phoneEnabled: false });
+  console.log("Phone access is off.");
+}
+
 function listen(port: number, triesLeft: number) {
   const server = createServer(handler(port));
   server.once("error", (err: NodeJS.ErrnoException) => {
@@ -575,6 +686,7 @@ function listen(port: number, triesLeft: number) {
     console.log(`Open: ${url}`);
     console.log("Leave this window open while you use the GUI. Close it to stop.");
     openBrowser(url);
+    if (readSettings().phoneEnabled) startPhone().catch((e) => console.error(e.message));
   });
 }
 
