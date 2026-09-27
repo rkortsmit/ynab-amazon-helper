@@ -86,6 +86,12 @@ Keep `.env`, `data/` and `profiles/` private. Git already ignores them, so they 
 - **YNAB can't edit an existing split through its API.** The helper can turn an unsplit transaction into a split. To change a split that already exists, edit it in YNAB.
 - **The command-line tools and AI-assistant workflow from the original project still work.** See the [original repository](https://github.com/deshazer/ynab-amazon-helper) for those instructions.
 
+## Credits
+
+- **Original project:** [deshazer/ynab-amazon-helper](https://github.com/deshazer/ynab-amazon-helper), which does the Amazon order syncing, matching and YNAB integration this fork builds on.
+- **This fork's GUI and additions** (guided setup, memo-only updates, multiple Amazon accounts, splits, item prices and phone access) were built with help from [Claude](https://www.anthropic.com/claude), Anthropic's AI assistant. I tested each change and reviewed it before committing.
+- **QR codes** are generated with Project Nayuki's [QR Code generator library](https://www.nayuki.io/page/qr-code-generator-library) (MIT License).
+
 ## License
 
 MIT License. See `LICENSE`. You can use, modify and share this project as long as the license notice is kept. Original project by [deshazer](https://github.com/deshazer/ynab-amazon-helper).
