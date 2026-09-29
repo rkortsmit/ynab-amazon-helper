@@ -677,26 +677,56 @@ export async function extractOrderItems(page: Page): Promise<ExtractedOrderItems
       totalCents: labeled(["Grand Total", "Order Total", "Total"]),
     };
 
-    // Strategy 1: newer layout with data-component markers.
-    const blocks = Array.from(document.querySelectorAll('[data-component="purchasedItems"]'));
+    const qtyFrom = (row: HTMLElement): number => {
+      const m = clean(row.innerText).match(/\b(?:Qty|Quantity):?\s*(\d{1,3})\b/i);
+      if (m) return Number(m[1]);
+      const badge = clean((row.querySelector(".od-item-view-qty, .item-view-qty") as HTMLElement | null)?.innerText);
+      return /^\d{1,3}$/.test(badge) ? Number(badge) : 1;
+    };
+    // Climb from an item's title to the smallest block that holds this item only (and ideally its price).
+    const rowFor = (el: Element, isTitle: (e: Element) => boolean, hasPrice: (e: HTMLElement) => boolean): HTMLElement => {
+      let row = el as HTMLElement;
+      let best: HTMLElement = row;
+      for (let n = 0, cur = el.parentElement; cur && cur !== document.body && n < 10; n += 1, cur = cur.parentElement) {
+        const titles = Array.from(cur.querySelectorAll("*")).filter(isTitle);
+        const distinct = new Set(titles.map((t) => clean((t as HTMLElement).innerText)).filter(Boolean));
+        if (distinct.size > 1) break; // would include another item
+        best = cur;
+        if (hasPrice(cur)) return cur;
+      }
+      return best;
+    };
+
+    // Strategy 1: newer layout with data-component markers. One block can hold several items,
+    // so start from every item title, not every block.
+    const isCompTitle = (e: Element) => e.getAttribute("data-component") === "itemTitle";
     const fromComponents: AmazonOrderItem[] = [];
-    for (const block of blocks) {
-      const title = clean((block.querySelector('[data-component="itemTitle"]') as HTMLElement | null)?.innerText);
-      if (!title) continue;
-      const priceEl = block.querySelector('[data-component="unitPrice"]') as HTMLElement | null;
-      const qtyMatch = clean((block as HTMLElement).innerText).match(/\b(?:Qty|Quantity):?\s*(\d{1,3})\b/i);
-      const badge = clean((block.querySelector(".od-item-view-qty, .item-view-qty") as HTMLElement | null)?.innerText);
-      fromComponents.push({
-        title,
-        unitPriceCents: money(priceEl?.innerText),
-        quantity: qtyMatch ? Number(qtyMatch[1]) : /^\d{1,3}$/.test(badge) ? Number(badge) : 1,
-      });
-    }
-    if (fromComponents.length && fromComponents.some((i) => i.unitPriceCents !== null)) {
-      return { items: fromComponents, summary: { ...summaryBase, strategy: "data-component" } };
+    const seen1 = new Set<string>();
+    for (const t of Array.from(document.querySelectorAll('[data-component="itemTitle"]'))) {
+      const title = clean((t as HTMLElement).innerText);
+      if (!title || seen1.has(title)) continue;
+      seen1.add(title);
+      const row = rowFor(t, isCompTitle, (e) => Boolean(e.querySelector('[data-component="unitPrice"]')));
+      const priceEl = row.querySelector('[data-component="unitPrice"]') as HTMLElement | null;
+      fromComponents.push({ title, unitPriceCents: money(priceEl?.innerText), quantity: qtyFrom(row) });
     }
 
-    // Strategy 2: page text. Item titles are the lines followed by "Sold by:" (same rule the sync uses);
+    // Strategy 2: product links (works across older and newer layouts).
+    const isProductLink = (e: Element) =>
+      e.tagName === "A" && /\/(dp|gp\/product)\//.test(e.getAttribute("href") ?? "") && clean((e as HTMLElement).innerText).length > 8;
+    const fromLinks: AmazonOrderItem[] = [];
+    const seen2 = new Set<string>();
+    for (const a of Array.from(document.querySelectorAll("a")).filter(isProductLink)) {
+      const title = clean((a as HTMLElement).innerText);
+      if (seen2.has(title)) continue;
+      seen2.add(title);
+      const priceRe = /\$\s?[\d,]+\.\d{2}/;
+      const row = rowFor(a, isProductLink, (e) => priceRe.test(e.innerText));
+      const m = clean(row.innerText).match(/\$\s?[\d,]+\.\d{2}/);
+      fromLinks.push({ title, unitPriceCents: m ? money(m[0]) : null, quantity: qtyFrom(row) });
+    }
+
+    // Strategy 3: page text. Item titles are the lines followed by "Sold by:" (same rule the sync uses);
     // the price is the first "$x.xx" line after the title and before the next item.
     const titleIdx: number[] = [];
     for (let i = 0; i < lines.length - 1; i += 1) {
@@ -718,7 +748,21 @@ export async function extractOrderItems(page: Page): Promise<ExtractedOrderItems
       if (qty === 1 && /^\d{1,2}$/.test(before) && Number(before) >= 2 && Number(before) <= 50) qty = Number(before);
       fromText.push({ title: lines[start], unitPriceCents: price, quantity: qty });
     });
-    return { items: fromText, summary: { ...summaryBase, strategy: fromText.some((i) => i.unitPriceCents !== null) ? "text" : "none" } };
+
+    // Pick the reading that agrees with Amazon's own item subtotal; otherwise the most complete one.
+    const candidates: Array<[string, AmazonOrderItem[]]> = [["data-component", fromComponents], ["links", fromLinks], ["text", fromText]];
+    const pricedSum = (items: AmazonOrderItem[]) => items.reduce((a, i) => a + (i.unitPriceCents ?? 0) * i.quantity, 0);
+    const pricedCount = (items: AmazonOrderItem[]) => items.filter((i) => i.unitPriceCents !== null).length;
+    const sub = summaryBase.subtotalCents;
+    const exact = sub !== null ? candidates.find(([, items]) => items.length && pricedSum(items) === sub) : undefined;
+    const [strategy, items] =
+      exact ??
+      [...candidates].sort((a, b) => pricedCount(b[1]) - pricedCount(a[1]) || b[1].length - a[1].length)[0];
+    const matched = sub !== null && items.length > 0 && pricedSum(items) === sub;
+    return {
+      items,
+      summary: { ...summaryBase, strategy: items.some((i) => i.unitPriceCents !== null) ? `${strategy}${sub !== null ? (matched ? " (matches Amazon subtotal)" : " (does NOT match Amazon subtotal)") : ""}` : "none" },
+    };
   });
 }
 

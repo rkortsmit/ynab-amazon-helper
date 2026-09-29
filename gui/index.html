@@ -141,6 +141,7 @@
   .sphead .btn { margin-left: 4px; }
   .spnote:empty { display: none; }
   .spnote { margin: 4px 0; color: var(--accent); }
+  .spnote.warn { color: var(--warn); background: var(--warn-bg); padding: 6px 10px; border-radius: 6px; }
   .spstatus { font-size: 13px; color: var(--warn); margin-bottom: 8px; }
   .spstatus.ok { color: var(--ok); }
 
@@ -856,10 +857,36 @@ function priceLines(r, totalCents) {
   if (!priced.length) return null;
   let lines = priced.map((i) => ({ category: "", amount: fmt(i.unitCents * i.qty), memo: shortTitle(i.title) + (i.qty > 1 ? ` (x${i.qty})` : "") }));
   const sum = priced.reduce((a, i) => a + i.unitCents * i.qty, 0);
-  const missing = pr.items.length - priced.length;
+
+  // Items the order has (from the sync) that didn't get a price. Compare loosely, since titles can be shortened.
+  const key = (t) => t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().slice(0, 24);
+  const pricedKeys = priced.map((i) => key(i.title));
+  const known = [...(pr.items || []).filter((i) => i.unitCents === null).map((i) => i.title), ...(r.items || [])];
+  const missingTitles = [];
+  for (const t of known) {
+    const k = key(t);
+    if (!k || pricedKeys.some((p) => p.startsWith(k.slice(0, 16)) || k.startsWith(p.slice(0, 16)))) continue;
+    if (!missingTitles.some((m) => key(m) === k)) missingTitles.push(t);
+  }
+  const sub = pr.subtotalCents;
+  const gap = sub != null ? sub - sum : null;
+
+  // Prices don't add up to Amazon's own item total: some items are missing. Don't spread anything yet.
+  if ((gap !== null && gap !== 0) || (gap === null && missingTitles.length)) {
+    const extra = missingTitles.length ? missingTitles : ["Item(s) not read from Amazon"];
+    const fillGap = gap !== null && gap > 0 && extra.length === 1;
+    lines = [...lines, ...extra.map((t) => ({ category: "", amount: fillGap ? fmt(gap) : "", memo: shortTitle(t) }))];
+    let note = gap !== null && gap > 0
+      ? `Amazon says the items total $${fmt(sub)}, but prices were found for only $${fmt(sum)}.`
+      : `Some items in this order have no price.`;
+    note += fillGap
+      ? ` The missing $${fmt(gap)} was put on the "${shortTitle(extra[0])}" line. Check it, then click “Spread tax & shipping”.`
+      : ` Fill in the amounts for the added line${extra.length > 1 ? "s" : ""} (or click “Refresh item prices”), then click “Spread tax & shipping”.`;
+    return { lines, note, warn: true };
+  }
+
   let note;
   if (sum === totalCents) note = "Filled from Amazon prices. They match this charge exactly.";
-  else if (missing) note = `Filled from Amazon prices (before tax). ${missing} item${missing > 1 ? "s" : ""} had no price and ${missing > 1 ? "were" : "was"} left out: add a line if it's part of this charge, then click “Spread tax & shipping”.`;
   else if (pr.totalCents === totalCents && sum > 0) {
     let used = 0;
     lines = lines.map((l, idx) => { const c = idx === lines.length - 1 ? totalCents - used : Math.round((toCents(l.amount) * totalCents) / sum); used += c; return { ...l, amount: fmt(c) }; });
@@ -871,7 +898,7 @@ function priceLines(r, totalCents) {
 function defaultDraft(r) {
   if (!r.splits?.length && r.prices) {
     const pl = priceLines(r, Math.round(Math.abs(r.amount) * 100));
-    if (pl && pl.lines.length >= 2) { const d = pl.lines; d.note = pl.note; return d; }
+    if (pl && pl.lines.length >= 2) { const d = pl.lines; d.note = pl.note; d.warn = pl.warn; return d; }
   }
   if (r.splits?.length) return r.splits.map((l) => ({ category: l.category, amount: fmt(Math.round(Math.abs(l.amount) * 100)), memo: l.memo || "" }));
   if (r.items.length >= 2) return r.items.map((t) => ({ category: "", amount: "", memo: shortTitle(t) }));
@@ -920,10 +947,11 @@ function splitRow(r, which) {
   }
   const noteLine = el("div", { className: "note spnote" });
   if (draft.note) noteLine.textContent = draft.note;
+  noteLine.classList.toggle("warn", Boolean(draft.warn));
   // Prices arrived after the panel was opened with empty amounts: fill them in.
   if (pr && draft.every((l) => !toCents(l.amount))) {
     const pl = priceLines(r, totalCents);
-    if (pl) { draft.splice(0, draft.length, ...pl.lines.map((l, idx) => ({ ...l, category: draft[idx]?.category || "" }))); noteLine.textContent = pl.note; }
+    if (pl) { draft.splice(0, draft.length, ...pl.lines.map((l, idx) => ({ ...l, category: draft[idx]?.category || "" }))); noteLine.textContent = pl.note; noteLine.classList.toggle("warn", Boolean(pl.warn)); }
   }
   panel.append(noteLine);
 
@@ -975,7 +1003,7 @@ function splitRow(r, which) {
   }
   if (pr?.items?.some((i) => i.unitCents !== null)) {
     const fillBtn = el("button", { className: "link", textContent: "Fill from Amazon prices" });
-    fillBtn.onclick = () => { const pl = priceLines(r, totalCents); if (pl) { draft.splice(0, draft.length, ...pl.lines); noteLine.textContent = pl.note; renderLines(); } };
+    fillBtn.onclick = () => { const pl = priceLines(r, totalCents); if (pl) { draft.splice(0, draft.length, ...pl.lines); noteLine.textContent = pl.note; noteLine.classList.toggle("warn", Boolean(pl.warn)); renderLines(); } };
     tools.append(fillBtn);
   }
   const spread = el("button", { className: "link", textContent: "Spread tax & shipping" });
