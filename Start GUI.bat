@@ -35,7 +35,8 @@ if errorlevel 1 goto install_failed
 
 :start
 bun gui\server.ts
-pause
+rem Close by itself when the helper stops normally (or moves to the background); keep errors on screen.
+if errorlevel 1 pause
 exit /b 0
 
 :no_bun

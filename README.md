@@ -67,6 +67,17 @@ The helper runs on your computer, but you can use it from your phone's browser w
 
 On a phone, transactions show as cards, and the Send to YNAB bar stays at the bottom. Amazon sign-ins and security checks still happen on the computer. Phone access is off until you turn it on, and the phone link has its own private key, which you can replace at any time. Only turn it on at home, not on public Wi-Fi. To use it away from home, connect your phone and computer with a private VPN such as [Tailscale](https://tailscale.com).
 
+## Run It in the Background (Windows)
+
+After the first setup with **Start GUI.bat**, you don't need the black window anymore:
+
+- **Open YNAB Helper.vbs** opens the helper in your browser, starting it silently in the background if it isn't already running. Right-click it and choose **Send to → Desktop (create shortcut)** for a Desktop icon.
+- On the **Setup** tab, **Start with Windows** starts the helper silently each time you sign in, so the page and phone access are always available. This works especially well with Tailscale.
+- **Switch to background** on the Setup tab moves a helper you started with Start GUI.bat into the background, and the black window closes.
+- **Stop the helper** on the Setup tab stops it.
+
+Running in the background, the helper writes its messages to `data\gui-server.log`. To keep phone access working, don't let the computer go to sleep.
+
 ## Privacy and Safety
 
 Everything runs locally:
