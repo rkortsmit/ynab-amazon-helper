@@ -149,6 +149,11 @@
   .qrwrap { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; margin: 10px 0; }
   .qrbox { width: 190px; height: 190px; background: #fff; border-radius: 8px; padding: 6px; border: 1px solid var(--line); }
   .qrbox svg { width: 100%; height: 100%; display: block; }
+  .qrinfo { flex: 1; min-width: 240px; }
+  .qrswitch { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-bottom: 8px; }
+  .qrswitch button { border: 0; background: var(--panel); color: var(--muted); padding: 7px 14px; font: inherit; cursor: pointer; }
+  .qrswitch button + button { border-left: 1px solid var(--line); }
+  .qrswitch button.on { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
   .phoneurl { font-family: Consolas, monospace; font-size: 12px; word-break: break-all; background: var(--code); padding: 4px 6px; border-radius: 4px; display: inline-block; margin: 2px 0; }
 
   /* ---------- small screens (phones) ---------- */
@@ -1063,7 +1068,7 @@ let setupState = null;
 
 async function refreshSetup() {
   try { setupState = await api("/api/setup/status"); } catch (e) { setupState = null; }
-  await refreshPhone();
+  await Promise.all([refreshPhone(), refreshRunState()]);
   renderSetup();
   return setupState;
 }
@@ -1167,10 +1172,71 @@ function renderSetup() {
     el("div", { className: "actions" }, goSync)]));
 
   root.append(phoneCard());
+  if (runState && runState.viewer !== "phone") root.append(backgroundCard());
 
   const allReady = s.configured && s.browserInstalled && s.profiles > 0;
   root.append(el("div", { className: "card" }, el("h3", { textContent: allReady ? "You're all set" : "Then, day to day" }),
     el("p", { textContent: "Click Sync all accounts (with Analyze turned on), then work through the Transactions tab: add memos, pick categories or split charges, and finally click Send to YNAB in the bar at the bottom of that tab. Every button that changes YNAB shows a preview first." })));
+}
+
+// ----- running in the background -----
+let runState = null;
+async function refreshRunState() {
+  try { runState = await api("/api/runmode"); } catch { runState = null; }
+  return runState;
+}
+function backgroundCard() {
+  const r = runState;
+  const on = r.autostart.enabled;
+  const card = el("div", { className: "card setupstep" + (on ? " done" : "") });
+  card.append(el("h3", {}, el("span", { className: "stepnum", textContent: on ? "✓" : "7" }), "Run in the background",
+    el("span", { className: `badge ${on ? "b-read" : "b-local"}`, textContent: on ? "Starts with Windows" : "Optional" })));
+  card.append(el("p", { textContent: r.hidden
+    ? "The helper is running in the background, with no window. It keeps running when you close this page."
+    : "The helper is running in a window (Start GUI.bat). Closing that window stops it." }));
+  const msg = el("div", { className: "note" });
+  const acts = el("div", { className: "actions" });
+  if (r.autostart.supported) {
+    const t = el("button", { className: on ? "btn secondary" : "btn", textContent: on ? "Don't start with Windows" : "Start with Windows" });
+    t.onclick = async () => {
+      try { runState = await api("/api/autostart", { method: "POST", body: JSON.stringify({ enabled: !on }) }); renderSetup(); }
+      catch (e) { msg.textContent = e.message; msg.style.color = "var(--danger)"; }
+    };
+    acts.append(t);
+  }
+  if (r.canBackground) {
+    const bgBtn = el("button", { className: "btn", textContent: "Switch to background" });
+    bgBtn.title = "Close the black window and keep the helper running in the background";
+    bgBtn.onclick = async () => {
+      if (!confirm("Switch the helper to the background?\n\nThe black window closes and the helper keeps running with no window. This page reconnects by itself in a few seconds.")) return;
+      try { await api("/api/background", { method: "POST" }); }
+      catch (e) { msg.textContent = e.message; msg.style.color = "var(--danger)"; return; }
+      document.body.innerHTML = "<div id='bgwait' style='padding:32px;font:16px system-ui'><h2>Switching to the background…</h2><p>This page reconnects by itself in a few seconds.</p></div>";
+      for (let i = 0; i < 45; i++) {
+        await new Promise((res) => setTimeout(res, 1000));
+        try {
+          const st = await api("/api/runmode");
+          if (st.hidden) { location.reload(); return; }
+        } catch {}
+      }
+      document.getElementById("bgwait").innerHTML = "<h2>The helper hasn't come back yet.</h2><p>Double-click <b>Open YNAB Helper</b> in the helper folder. If that shows an error, the details are in <code>data\\launcher.log</code> and <code>data\\gui-server.log</code>.</p>";
+    };
+    acts.append(bgBtn);
+  }
+  const stop = el("button", { className: "btn secondary", textContent: "Stop the helper" });
+  stop.onclick = async () => {
+    if (!confirm("Stop the helper now? This page and phone access stop working until you start it again with \"Open YNAB Helper\" or Start GUI.bat.")) return;
+    try { await api("/api/shutdown", { method: "POST" }); } catch {}
+    document.body.innerHTML = "<div style='padding:32px;font:16px system-ui'><h2>The helper has stopped.</h2><p>To start it again, double-click <b>Open YNAB Helper</b> (or Start GUI.bat) in the helper folder.</p></div>";
+  };
+  acts.append(stop);
+  card.append(
+    el("p", { className: "note", textContent: r.autostart.supported
+      ? "With \"Start with Windows\" on, the helper starts silently every time you sign in, so the page and phone access (including Tailscale) are always there. Amazon sign-in windows still appear on this computer when needed."
+      : "Starting with Windows is only available on Windows, with \"Start Helper in Background.vbs\" in the helper folder." }),
+    el("p", { className: "note", textContent: "To open this page any time, double-click \"Open YNAB Helper\" in the helper folder. It starts the helper if needed. For a Desktop icon, right-click it and choose Send to > Desktop (create shortcut). For phone access from anywhere, keep this computer from going to sleep (Settings > System > Power)." }),
+    acts, msg);
+  return card;
 }
 
 // ----- phone access -----
@@ -1206,11 +1272,34 @@ function phoneCard() {
   if (!p.urls.length) {
     card.append(el("p", { className: "note", textContent: "Phone access is on, but this computer doesn't seem to be on a home network right now." }));
   } else {
-    const box = el("div", { className: "qrbox" }); box.innerHTML = p.qr || ""; // SVG generated by the local helper
-    const info = el("div", {}, el("p", { textContent: "Scan this with your phone's camera and open the link." }),
-      el("p", { className: "note", textContent: "Or type one of these into the phone's browser:" }));
-    for (const u of p.urls) info.append(el("div", {}, el("span", { className: "phoneurl", textContent: u.url }), el("span", { className: "note", textContent: `  (${u.kind})` })));
-    info.append(el("p", { className: "note", textContent: "The link has a private key built in and keeps working after restarts. Bookmark it or add it to your home screen. If this computer's address changes, scan again." }));
+    // One QR code at a time; switch between the home Wi-Fi and Tailscale addresses.
+    // Default: Tailscale when available, because that link also works on home Wi-Fi.
+    const label = (u) => (u.kind === "Tailscale" ? "Tailscale (anywhere)" : "Home Wi-Fi");
+    const saved = store.get("ynabgui.qrKind", null);
+    let idx = p.urls.findIndex((u) => u.kind === saved);
+    if (idx < 0) idx = Math.max(0, p.urls.findIndex((u) => u.kind === "Tailscale"));
+    const box = el("div", { className: "qrbox" });
+    const urlLine = el("div", { className: "phoneurl" });
+    const hint = el("p", { className: "note" });
+    const sw = el("div", { className: "qrswitch" });
+    const show = (i) => {
+      idx = i;
+      const u = p.urls[i];
+      box.innerHTML = u.qr || ""; // SVG generated by the local helper
+      urlLine.textContent = u.url;
+      hint.textContent = u.kind === "Tailscale"
+        ? "Works anywhere your phone has internet, as long as Tailscale is switched on on the phone. It also works on home Wi-Fi, so this is the one to bookmark."
+        : "Works only when your phone is on the same Wi-Fi as this computer.";
+      sw.querySelectorAll("button").forEach((b, j) => b.classList.toggle("on", j === i));
+      store.set("ynabgui.qrKind", u.kind);
+    };
+    if (p.urls.length > 1) p.urls.forEach((u, i) => { const b = el("button", { textContent: label(u) }); b.onclick = () => show(i); sw.append(b); });
+    const info = el("div", { className: "qrinfo" },
+      sw.childNodes.length ? sw : null,
+      el("p", { textContent: "Scan this with your phone's camera and open the link." }),
+      el("p", { className: "note", textContent: "Or type this into the phone's browser:" }), urlLine, hint,
+      el("p", { className: "note", textContent: "The link has a private key built in and keeps working after restarts. Bookmark it or add it to your home screen. If this computer's address changes, scan again." }));
+    show(idx);
     card.append(el("div", { className: "qrwrap" }, box, info));
   }
   const reset = el("button", { className: "btn secondary", textContent: "Make a new phone link" });

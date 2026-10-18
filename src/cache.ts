@@ -1,8 +1,8 @@
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AppConfig } from "./config.ts";
 import type { AmazonOrder, AmazonOrderCache, AmazonPaymentTransaction, AmazonPaymentTransactionCache } from "./types.ts";
-import { slugify } from "./utils.ts";
+import { readJsonFile, slugify, writeFileAtomic } from "./utils.ts";
 
 function profileCachePath(config: AppConfig, profile: string): string {
   return join(config.dataDir, `amazon-orders-${slugify(profile)}.json`);
@@ -21,30 +21,16 @@ function cacheKey(order: AmazonOrder): string {
 }
 
 export async function readProfileOrders(config: AppConfig, profile: string): Promise<AmazonOrder[]> {
-  const path = profileCachePath(config, profile);
-
-  try {
-    const contents = await readFile(path, "utf8");
-    const parsed = JSON.parse(contents) as AmazonOrderCache;
-    return parsed.orders ?? [];
-  } catch {
-    return [];
-  }
+  const parsed = await readJsonFile<AmazonOrderCache>(profileCachePath(config, profile));
+  return parsed?.orders ?? [];
 }
 
 export async function readProfilePaymentTransactions(
   config: AppConfig,
   profile: string,
 ): Promise<AmazonPaymentTransaction[]> {
-  const path = paymentTransactionCachePath(config, profile);
-
-  try {
-    const contents = await readFile(path, "utf8");
-    const parsed = JSON.parse(contents) as AmazonPaymentTransactionCache;
-    return parsed.transactions ?? [];
-  } catch {
-    return [];
-  }
+  const parsed = await readJsonFile<AmazonPaymentTransactionCache>(paymentTransactionCachePath(config, profile));
+  return parsed?.transactions ?? [];
 }
 
 export async function writeProfileOrders(
@@ -82,7 +68,7 @@ export async function writeProfileOrders(
     orders: merged,
   };
 
-  await writeFile(profileCachePath(config, profile), `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  await writeFileAtomic(profileCachePath(config, profile), `${JSON.stringify(payload, null, 2)}\n`);
 
   return {
     total: merged.length,
@@ -141,7 +127,7 @@ export async function writeProfilePaymentTransactions(
     transactions: merged,
   };
 
-  await writeFile(paymentTransactionCachePath(config, profile), `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  await writeFileAtomic(paymentTransactionCachePath(config, profile), `${JSON.stringify(payload, null, 2)}\n`);
 
   return {
     total: merged.length,

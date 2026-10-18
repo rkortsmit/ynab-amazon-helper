@@ -6,7 +6,6 @@ import {
   writeProfilePaymentTransactions,
 } from "./cache.ts";
 import { openOrderInProfile, syncAmazonOrders, syncAmazonPaymentTransactions } from "./amazon.ts";
-import { readFile as readFileAsync, writeFile as writeFileAsync } from "node:fs/promises";
 import { join as joinPath } from "node:path";
 import { addOverrideRule, fingerprintOrder } from "./memory.ts";
 import { generateMemoFromMatch } from "./memo.ts";
@@ -23,8 +22,8 @@ import {
   readAnalysisBundle,
   writeAnalysisBundle,
 } from "./workflow.ts";
-import { resolveAccount, YnabClient } from "./ynab.ts";
-import { addDays, normalizeText } from "./utils.ts";
+import { hasRealCategory, resolveAccount, YnabClient } from "./ynab.ts";
+import { addDays, normalizeText, normalizeTitle, readJsonFile, writeFileAtomic } from "./utils.ts";
 import type { AnalysisBundle, YnabCategory } from "./types.ts";
 
 type ParsedArgs = {
@@ -208,8 +207,10 @@ async function run(): Promise<void> {
       marketplace,
     };
     const scrapedOrders = await syncAmazonOrders(config, syncOptions);
-    const scrapedPaymentTransactions = await syncAmazonPaymentTransactions(config, syncOptions);
+    // Save the orders right away, so a problem in the payments pass below can't throw them away.
     const summary = await writeProfileOrders(config, profile, marketplace, scrapedOrders);
+    console.log(`Saved ${scrapedOrders.length} scraped orders. Orders cache: ${summary.total} total (${summary.added} new, ${summary.updated} updated).`);
+    const scrapedPaymentTransactions = await syncAmazonPaymentTransactions(config, syncOptions);
     const paymentSummary = await writeProfilePaymentTransactions(config, profile, marketplace, scrapedPaymentTransactions);
     console.log(
       `Saved ${scrapedOrders.length} scraped orders and ${scrapedPaymentTransactions.length} payment transactions for ${profile}. Orders cache: ${summary.total} total (${summary.added} new, ${summary.updated} updated). Payments cache: ${paymentSummary.total} total (${paymentSummary.added} new, ${paymentSummary.updated} updated).`,
@@ -233,14 +234,9 @@ async function run(): Promise<void> {
     const extracted = await openOrderInProfile(config, { profile, marketplace, orderNumber, keepOpen });
 
     const pricesPath = joinPath(config.dataDir, "amazon-item-prices.json");
-    let store: Record<string, unknown> = {};
-    try {
-      store = JSON.parse(await readFileAsync(pricesPath, "utf8"));
-    } catch {
-      store = {};
-    }
+    const store: Record<string, unknown> = (await readJsonFile<Record<string, unknown>>(pricesPath)) ?? {};
     store[orderNumber] = { profile, ...extracted, scrapedAt: new Date().toISOString() };
-    await writeFileAsync(pricesPath, `${JSON.stringify(store, null, 2)}\n`, "utf8");
+    await writeFileAtomic(pricesPath, `${JSON.stringify(store, null, 2)}\n`);
 
     const priced = extracted.items.filter((item) => item.unitPriceCents !== null);
     console.log(`Items found: ${extracted.items.length} (with prices: ${priced.length}) [reader: ${extracted.summary.strategy}]`);
@@ -462,6 +458,9 @@ async function run(): Promise<void> {
 
     if (scope === "item" || scope === "both") {
       for (const itemTitle of transaction.bestMatch.order.itemTitles) {
+        if (!normalizeTitle(itemTitle)) {
+          continue;
+        }
         await addOverrideRule(config, {
           type: "exact_item",
           match: itemTitle,
@@ -554,45 +553,71 @@ async function run(): Promise<void> {
     }
 
     let updated = 0;
+    let failed = 0;
     for (const item of applicable) {
-      if (item.splits) {
-        // Re-check live YNAB state: YNAB cannot change an existing split, and the amount must still match.
-        const live = await client.getTransactionSplitState(planId, item.transaction.transactionId);
-        const label = `${item.transaction.transactionDate} ${formatSignedCents(item.signedAmountCents)} ${item.transaction.payee}`;
-        if (live.deleted) {
+      const label = `${item.transaction.transactionDate} ${formatSignedCents(item.signedAmountCents)} ${item.transaction.payee}`;
+      try {
+        if (item.splits) {
+          // Re-check live YNAB state: YNAB cannot change an existing split, and the amount must still match.
+          const live = await client.getTransactionSplitState(planId, item.transaction.transactionId);
+          if (live.deleted) {
+            console.log(`  skipped (deleted in YNAB): ${label}`);
+            continue;
+          }
+          if (live.subtransactionCount > 0) {
+            console.log(`  skipped (already split in YNAB; change it in YNAB itself): ${label}`);
+            continue;
+          }
+          if (live.amountMilliunits !== item.signedAmountCents * 10) {
+            console.log(`  skipped (amount changed in YNAB since the analysis; run Analyze again): ${label}`);
+            continue;
+          }
+          await client.updateTransaction(planId, item.transaction.transactionId, {
+            approved: item.transaction.decision.shouldApprove,
+            memo: (live.memo ?? "").trim() ? undefined : item.memo ?? undefined,
+            subtransactions: item.splits.map((line) => ({
+              amountMilliunits: line.amountCents * 10,
+              categoryId: line.categoryId,
+              memo: line.memo,
+            })),
+          });
+          updated += 1;
+          continue;
+        }
+
+        // Re-check live YNAB state, as memo apply does: the analysis may be hours old, and a category
+        // you set in YNAB since then must never be overwritten.
+        const current = await client.getTransaction(planId, item.transaction.transactionId);
+        if (current.deleted) {
           console.log(`  skipped (deleted in YNAB): ${label}`);
           continue;
         }
-        if (live.subtransactionCount > 0) {
-          console.log(`  skipped (already split in YNAB; change it in YNAB itself): ${label}`);
+        if (current.approved && hasRealCategory(current)) {
+          console.log(`  skipped (already approved with a category in YNAB since the analysis; run Analyze again): ${label}`);
           continue;
         }
-        if (live.amountMilliunits !== item.signedAmountCents * 10) {
-          console.log(`  skipped (amount changed in YNAB since the analysis; run Analyze again): ${label}`);
-          continue;
-        }
+
         await client.updateTransaction(planId, item.transaction.transactionId, {
+          categoryId: item.categoryId,
           approved: item.transaction.decision.shouldApprove,
-          memo: (live.memo ?? "").trim() ? undefined : item.memo ?? undefined,
-          subtransactions: item.splits.map((line) => ({
-            amountMilliunits: line.amountCents * 10,
-            categoryId: line.categoryId,
-            memo: line.memo,
-          })),
+          memo: item.memo ?? undefined,
         });
         updated += 1;
-        continue;
+      } catch (error) {
+        // Keep going so one rejected transaction doesn't hide what happened to the rest.
+        failed += 1;
+        console.log(`  FAILED: ${label} (${error instanceof Error ? error.message : String(error)})`);
+        if (error instanceof Error && error.message.includes("(429)")) {
+          console.log("  Stopping here: run apply again later to finish the rest.");
+          break;
+        }
       }
-
-      await client.updateTransaction(planId, item.transaction.transactionId, {
-        categoryId: item.categoryId,
-        approved: item.transaction.decision.shouldApprove,
-        memo: item.memo ?? undefined,
-      });
-      updated += 1;
     }
 
-    console.log(`YNAB transactions updated: ${updated}.`);
+    console.log(`YNAB transactions updated: ${updated}.${failed ? ` Failed: ${failed} (see above).` : ""}`);
+    if (failed) {
+      process.exitCode = 1;
+    }
     return;
   }
 

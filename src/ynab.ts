@@ -4,6 +4,17 @@ import { milliunitsToCents, normalizeText } from "./utils.ts";
 
 type YnabEnvelope<T> = { data: T };
 
+const REQUEST_TIMEOUT_MS = 60_000;
+
+// YNAB allows 200 requests per hour per token. Say so plainly instead of dumping the raw error body.
+async function describeFailure(prefix: string, response: Response): Promise<string> {
+  if (response.status === 429) {
+    return `${prefix} (429): YNAB's limit of 200 requests per hour was reached. Wait a while, then run the command again.`;
+  }
+  const body = await response.text().catch(() => "");
+  return `${prefix} (${response.status}): ${body}`;
+}
+
 export class YnabClient {
   constructor(private readonly config: AppConfig) {
     if (!config.ynabAccessToken) {
@@ -17,11 +28,11 @@ export class YnabClient {
         Authorization: `Bearer ${this.config.ynabAccessToken}`,
         Accept: "application/json",
       },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
 
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`YNAB request failed (${response.status}): ${body}`);
+      throw new Error(await describeFailure("YNAB request failed", response));
     }
 
     return (await response.json()) as T;
@@ -186,6 +197,7 @@ export class YnabClient {
         Accept: "application/json",
         "Content-Type": "application/json",
       },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       body: JSON.stringify({
         transaction: {
           category_id: updates.subtransactions ? null : updates.categoryId,
@@ -201,8 +213,7 @@ export class YnabClient {
     });
 
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`YNAB update failed (${response.status}): ${body}`);
+      throw new Error(await describeFailure("YNAB update failed", response));
     }
 
     const parsed = (await response.json()) as YnabEnvelope<{ transaction: YnabApiTransaction }>;

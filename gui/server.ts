@@ -7,7 +7,7 @@ import { createServer, type IncomingMessage, type ServerResponse, type Server } 
 import { networkInterfaces } from "node:os";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync, statSync, readdirSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, statSync, readdirSync, mkdirSync, unlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { qrcodegen } from "./qrcodegen.ts";
@@ -15,9 +15,42 @@ import { qrcodegen } from "./qrcodegen.ts";
 const guiDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(guiDir, "..");
 const dataDir = join(rootDir, "data");
-const TOKEN = randomBytes(16).toString("hex");
+// The key for this computer's page. Kept between restarts (like the phone key) so the page reconnects
+// after a restart or a switch to the background, and so it can be bookmarked. Only works on 127.0.0.1.
+const TOKEN = (() => {
+  const path = join(dataDir, "gui-settings.json");
+  let settings: Record<string, unknown> = {};
+  try { settings = JSON.parse(readFileSync(path, "utf8")); } catch {}
+  if (typeof settings.desktopToken === "string" && /^[a-f0-9]{32}$/.test(settings.desktopToken)) return settings.desktopToken;
+  const token = randomBytes(16).toString("hex");
+  try {
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(path, JSON.stringify({ ...settings, desktopToken: token }, null, 2) + "\n", "utf8");
+  } catch {}
+  return token;
+})();
 const BASE_PORT = Number(process.env.GUI_PORT ?? 4178);
 const noOpen = process.argv.includes("--no-open");
+// Started by "Start Helper in Background.vbs" / Windows sign-in: no window, no browser.
+const background = process.argv.includes("--background");
+// Started with no console window (by either .vbs launcher), so there's no window to close: stop it from the Setup tab.
+const hidden = background || process.argv.includes("--hidden");
+
+// With no window, write messages to data/gui-server.log ourselves (no shell redirection needed).
+if (hidden) {
+  const logPath = join(dataDir, "gui-server.log");
+  const write = (level: string, args: unknown[]) => {
+    try {
+      mkdirSync(dataDir, { recursive: true });
+      const line = args.map((a) => (a instanceof Error ? a.stack ?? a.message : typeof a === "string" ? a : JSON.stringify(a))).join(" ");
+      const text = `[${new Date().toISOString()}] ${level}${line}\n`;
+      writeFileSync(logPath, text, { flag: "a" });
+    } catch {}
+  };
+  console.log = (...args: unknown[]) => write("", args);
+  console.error = (...args: unknown[]) => write("ERROR ", args);
+  process.on("uncaughtException", (e) => { write("CRASH ", [e]); process.exit(1); });
+}
 
 // ---------- command whitelist ----------
 
@@ -456,6 +489,8 @@ function handler(port: number, mode: "local" | "phone" = "local") {
       if (!hostOk(req.headers.host ?? "")) return send(res, 403, { error: "Bad host." });
       const url = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
 
+      if (req.method === "GET" && url.pathname === "/ping" && mode === "local") return send(res, 200, { app: "ynab-amazon-helper", pid: process.pid });
+
       if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
         return send(res, 200, readFileSync(join(guiDir, "index.html"), "utf8"), "text/html; charset=utf-8");
       }
@@ -466,6 +501,30 @@ function handler(port: number, mode: "local" | "phone" = "local") {
       }
 
       if (req.method === "GET" && url.pathname === "/api/phone") return send(res, 200, { ...phoneInfo(), viewer: mode });
+
+      if (req.method === "GET" && url.pathname === "/api/runmode") return send(res, 200, { background, hidden, canBackground: canSwitchToBackground(), autostart: autostartInfo(), viewer: mode });
+      if (req.method === "POST" && url.pathname === "/api/autostart") {
+        if (mode !== "local") throw new Error("This can only be changed on the computer.");
+        const body = await readJson(req);
+        setAutostart(body.enabled === true);
+        return send(res, 200, { background, hidden, canBackground: canSwitchToBackground(), autostart: autostartInfo(), viewer: mode });
+      }
+      if (req.method === "POST" && url.pathname === "/api/background") {
+        if (mode !== "local") throw new Error("This can only be done on the computer.");
+        if (!canSwitchToBackground()) throw new Error("Switching to the background is only available on Windows, with \"Start Helper in Background.vbs\" in the helper folder.");
+        await launchBackgroundAfterExit();
+        send(res, 200, { ok: true });
+        console.log("Switching to the background. This window will close.");
+        setTimeout(shutdown, 300);
+        return;
+      }
+      if (req.method === "POST" && url.pathname === "/api/shutdown") {
+        if (mode !== "local") throw new Error("The helper can only be stopped on the computer.");
+        send(res, 200, { ok: true });
+        console.log("Stopped from the Setup tab.");
+        setTimeout(shutdown, 300);
+        return;
+      }
       if (req.method === "POST" && url.pathname === "/api/phone") {
         if (mode !== "local") throw new Error("Phone access can only be changed on the computer.");
         const body = await readJson(req);
@@ -578,10 +637,31 @@ function handler(port: number, mode: "local" | "phone" = "local") {
 }
 
 function openBrowser(url: string) {
-  if (noOpen) return;
+  if (noOpen || background) return;
   const cmd = process.platform === "win32" ? "cmd" : process.platform === "darwin" ? "open" : "xdg-open";
   const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
   spawn(cmd, args, { detached: true, stdio: "ignore", windowsHide: true }).unref();
+}
+
+// Same, but waits until the browser has been asked to open before returning. Used when this copy is
+// about to exit (the helper is already running); exiting right away can cancel the request on Windows.
+function openBrowserAndWait(url: string): Promise<void> {
+  if (noOpen || background) return Promise.resolve();
+  const cmd = process.platform === "win32" ? "cmd" : process.platform === "darwin" ? "open" : "xdg-open";
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; setTimeout(resolve, 500); } };
+    try {
+      const child = spawn(cmd, args, { stdio: "ignore", windowsHide: true });
+      child.on("exit", finish);
+      child.on("error", (e) => { console.error(`Couldn't open the browser: ${e.message}`); finish(); });
+    } catch (e) {
+      console.error(`Couldn't open the browser: ${(e as Error).message}`);
+      finish();
+    }
+    setTimeout(finish, 8000); // never hang
+  });
 }
 
 // ---------- phone access (optional, off by default) ----------
@@ -640,7 +720,12 @@ function qrSvg(text: string): string {
 }
 function phoneInfo() {
   const running = Boolean(phoneServer);
-  const urls = running && phoneToken ? lanAddresses().map((a) => ({ kind: a.kind, url: `http://${a.address}:${phonePort}/?t=${phoneToken}` })) : [];
+  const urls = running && phoneToken
+    ? lanAddresses().map((a) => {
+        const url = `http://${a.address}:${phonePort}/?t=${phoneToken}`;
+        return { kind: a.kind, url, qr: qrSvg(url) };
+      })
+    : [];
   return { enabled: readSettings().phoneEnabled === true, running, port: running ? phonePort : null, urls, qr: urls[0] ? qrSvg(urls[0].url) : null };
 }
 function startPhone(): Promise<void> {
@@ -673,6 +758,101 @@ function stopPhone() {
   console.log("Phone access is off.");
 }
 
+// ---------- running in the background ----------
+const runningPath = join(dataDir, "gui-running.json");
+const startupDir = process.env.APPDATA ? join(process.env.APPDATA, "Microsoft", "Windows", "Start Menu", "Programs", "Startup") : null;
+const startupFile = startupDir ? join(startupDir, "YNAB Amazon Helper.vbs") : null;
+const backgroundLauncher = join(rootDir, "Start Helper in Background.vbs");
+
+function canSwitchToBackground(): boolean {
+  return process.platform === "win32" && !hidden && existsSync(backgroundLauncher);
+}
+// Starts "Start Helper in Background.vbs /after" through Windows (WMI), so it isn't a child of this
+// process and keeps going after this copy exits. The launcher waits until this copy has stopped.
+function launchBackgroundAfterExit(): Promise<void> {
+  const esc = (v: string) => v.replace(/'/g, "''");
+  const commandLine = `wscript.exe "${backgroundLauncher}" /after`;
+  const ps = [
+    "$ErrorActionPreference = 'Stop'",
+    `$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = '${esc(commandLine)}'; CurrentDirectory = '${esc(rootDir)}' }`,
+    "exit [int]$r.ReturnValue",
+  ].join("; ");
+  const encoded = Buffer.from(ps, "utf16le").toString("base64");
+  return new Promise((resolve, reject) => {
+    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], { stdio: "ignore", windowsHide: true });
+    const timer = setTimeout(() => { child.kill(); reject(new Error("Starting the background helper took too long.")); }, 20000);
+    child.on("error", (e) => { clearTimeout(timer); reject(new Error(`Couldn't start the background helper: ${e.message}`)); });
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error(`Couldn't start the background helper (code ${code}). Try double-clicking "Start Helper in Background.vbs".`));
+    });
+  });
+}
+
+function autostartInfo() {
+  const supported = process.platform === "win32" && Boolean(startupFile) && existsSync(backgroundLauncher);
+  return { supported, enabled: supported && existsSync(startupFile!) };
+}
+function setAutostart(enabled: boolean) {
+  if (!autostartInfo().supported) throw new Error("Starting with Windows is only available on Windows, with \"Start Helper in Background.vbs\" in the helper folder.");
+  if (enabled) {
+    mkdirSync(startupDir!, { recursive: true });
+    const vbs = [
+      "' Starts the YNAB Amazon Helper in the background when you sign in to Windows.",
+      "' Created by the helper's Setup tab. Turn it off there, or delete this file.",
+      `CreateObject("WScript.Shell").Run "wscript.exe """ & "${backgroundLauncher.replace(/"/g, '""')}" & """", 0, False`,
+      "",
+    ].join("\r\n");
+    writeFileSync(startupFile!, vbs, "utf8");
+  } else if (existsSync(startupFile!)) {
+    unlinkSync(startupFile!);
+  }
+}
+
+function writeRunning(url: string, port: number) {
+  try {
+    mkdirSync(dataDir, { recursive: true });
+    writeFileSync(runningPath, JSON.stringify({ pid: process.pid, port, url, background: hidden, startedAt: new Date().toISOString() }, null, 2), "utf8");
+  } catch {}
+}
+function clearRunning() {
+  try {
+    const r = JSON.parse(readFileSync(runningPath, "utf8"));
+    if (r.pid === process.pid) unlinkSync(runningPath);
+  } catch {}
+}
+function shutdown() {
+  if (job?.running && job.child) job.child.kill();
+  phoneServer?.close();
+  clearRunning();
+  process.exit(0);
+}
+for (const sig of ["SIGINT", "SIGTERM", "SIGBREAK", "SIGHUP"]) {
+  try { process.on(sig as NodeJS.Signals, shutdown); } catch {}
+}
+process.on("exit", clearRunning);
+
+// If the helper is already running, open it (unless --no-open) and exit instead of starting a second copy.
+async function alreadyRunning(): Promise<boolean> {
+  let r: any;
+  try { r = JSON.parse(readFileSync(runningPath, "utf8")); } catch { return false; }
+  if (!r?.port || !r?.url) return false;
+  try {
+    const res = await fetch(`http://127.0.0.1:${r.port}/ping`, { signal: AbortSignal.timeout(1500) });
+    const info: any = await res.json();
+    if (info?.app !== "ynab-amazon-helper" || info.pid !== r.pid) return false;
+  } catch {
+    return false;
+  }
+  console.log(`The helper is already running${r.background ? " in the background" : ""}.`);
+  if (!noOpen && !background) {
+    console.log("Opening it in your browser.");
+    await openBrowserAndWait(r.url);
+  }
+  return true;
+}
+
 function listen(port: number, triesLeft: number) {
   const server = createServer(handler(port));
   server.once("error", (err: NodeJS.ErrnoException) => {
@@ -682,12 +862,16 @@ function listen(port: number, triesLeft: number) {
   });
   server.listen(port, "127.0.0.1", () => {
     const url = `http://127.0.0.1:${port}/?t=${TOKEN}`;
-    console.log("YNAB Amazon Helper GUI is running.");
+    console.log(`YNAB Amazon Helper GUI is running${background ? " in the background" : ""}. (${new Date().toLocaleString()})`);
     console.log(`Open: ${url}`);
-    console.log("Leave this window open while you use the GUI. Close it to stop.");
-    openBrowser(url);
+    if (!hidden) console.log("Leave this window open while you use the GUI. Close it to stop.");
+    writeRunning(url, port);
+    if (!background) openBrowser(url);
     if (readSettings().phoneEnabled) startPhone().catch((e) => console.error(e.message));
   });
 }
 
-listen(BASE_PORT, 10);
+alreadyRunning().then((running) => {
+  if (running) process.exit(0);
+  listen(BASE_PORT, 10);
+});

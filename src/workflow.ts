@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildAmazonAnalysisTransactions, buildAnalysisBundle, buildBundleFromTransactions } from "./analysis.ts";
 import type { AppConfig } from "./config.ts";
@@ -6,10 +6,18 @@ import { readAllOrders, readAllPaymentTransactions } from "./cache.ts";
 import { buildGenericAnalysisTransactions, buildGenericHistory } from "./generic.ts";
 import { buildMemoryStore, readMemory, writeMemory } from "./memory.ts";
 import { isAmazonishTransaction, matchTransactions } from "./match.ts";
-import type { AnalysisBundle, MemoryStore, TransactionMatch, YnabAccount, YnabCategory } from "./types.ts";
+import type {
+  AmazonOrder,
+  AmazonPaymentTransaction,
+  AnalysisBundle,
+  MemoryStore,
+  TransactionMatch,
+  YnabAccount,
+  YnabCategory,
+} from "./types.ts";
 import { YnabClient, hasRealCategory, resolveAccount } from "./ynab.ts";
 import type { YnabTransaction } from "./types.ts";
-import { addDays } from "./utils.ts";
+import { addDays, writeFileAtomic } from "./utils.ts";
 
 type WorkflowOptions = {
   planId?: string | null;
@@ -131,8 +139,34 @@ async function resolveWorkflowAccount(config: AppConfig, options: WorkflowOption
   };
 }
 
-export async function loadPendingMatchContext(config: AppConfig, options: WorkflowOptions): Promise<PendingMatchContext> {
+// Everything the pending-match and learn steps both need. `analyzePendingTransactions` loads it once
+// and hands it to both, instead of each step re-resolving the account and re-reading the same data.
+type SharedWorkflowData = {
+  client: YnabClient;
+  planId: string;
+  account: YnabAccount;
+  categories: YnabCategory[];
+  orders: AmazonOrder[];
+  paymentTransactions: AmazonPaymentTransaction[];
+};
+
+async function loadSharedWorkflowData(config: AppConfig, options: WorkflowOptions): Promise<SharedWorkflowData> {
   const { client, planId, account } = await resolveWorkflowAccount(config, options);
+  const [categories, orders, paymentTransactions] = await Promise.all([
+    client.listCategories(planId),
+    readAllOrders(config),
+    readAllPaymentTransactions(config),
+  ]);
+  return { client, planId, account, categories, orders, paymentTransactions };
+}
+
+export async function loadPendingMatchContext(
+  config: AppConfig,
+  options: WorkflowOptions,
+  shared?: SharedWorkflowData,
+): Promise<PendingMatchContext> {
+  const { client, planId, account, categories, orders, paymentTransactions } =
+    shared ?? (await loadSharedWorkflowData(config, options));
   const days = options.days ?? 90;
   const pendingSinceDate = addDays(new Date().toISOString().slice(0, 10), -days);
   const { transactions, uncategorizedIds } = await fetchNeedsAttention(client, planId, pendingSinceDate, options.unapprovedOnly === true);
@@ -144,10 +178,7 @@ export async function loadPendingMatchContext(config: AppConfig, options: Workfl
       transaction.amountCents !== 0 &&
       isAmazonishTransaction(transaction),
   );
-  const orders = await readAllOrders(config);
-  const paymentTransactions = await readAllPaymentTransactions(config);
   const matches = matchTransactions(accountTransactions, orders, paymentTransactions);
-  const categories = await client.listCategories(planId);
 
   return {
     account,
@@ -162,8 +193,10 @@ export async function loadPendingMatchContext(config: AppConfig, options: Workfl
 export async function learnMemoryFromHistory(
   config: AppConfig,
   options: WorkflowOptions,
+  shared?: SharedWorkflowData,
 ): Promise<{ memory: MemoryStore; account: YnabAccount; categories: YnabCategory[] }> {
-  const { client, planId, account } = await resolveWorkflowAccount(config, options);
+  const { client, planId, account, categories, orders, paymentTransactions } =
+    shared ?? (await loadSharedWorkflowData(config, options));
   const historyDays = options.historyDays ?? 365;
   const historySinceDate = addDays(new Date().toISOString().slice(0, 10), -historyDays);
   const historyTransactions = await client.getAccountTransactions(planId, account.id, historySinceDate);
@@ -177,8 +210,6 @@ export async function learnMemoryFromHistory(
       hasRealCategory(transaction) &&
       isAmazonishTransaction(transaction),
   );
-  const orders = await readAllOrders(config);
-  const paymentTransactions = await readAllPaymentTransactions(config);
   const historyMatches = matchTransactions(categorizedHistory, orders, paymentTransactions);
   const existingMemory = await readMemory(config);
   const memory = buildMemoryStore({
@@ -193,7 +224,7 @@ export async function learnMemoryFromHistory(
   return {
     memory,
     account,
-    categories: await client.listCategories(planId),
+    categories,
   };
 }
 
@@ -201,8 +232,9 @@ export async function analyzePendingTransactions(
   config: AppConfig,
   options: WorkflowOptions,
 ): Promise<{ bundle: AnalysisBundle; path: string }> {
-  const pending = await loadPendingMatchContext(config, options);
-  const learned = await learnMemoryFromHistory(config, options);
+  const shared = await loadSharedWorkflowData(config, options);
+  const pending = await loadPendingMatchContext(config, options, shared);
+  const learned = await learnMemoryFromHistory(config, options, shared);
 
   const bundle = buildAnalysisBundle({
     account: pending.account,
@@ -344,7 +376,7 @@ export async function writeAnalysisBundle(
   bundle: AnalysisBundle,
   explicitPath: string,
 ): Promise<void> {
-  await writeFile(explicitPath, `${JSON.stringify(bundle, null, 2)}\n`, "utf8");
+  await writeFileAtomic(explicitPath, `${JSON.stringify(bundle, null, 2)}\n`);
 }
 
 export function defaultAnalysisPath(config: AppConfig): string {

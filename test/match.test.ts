@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { matchTransactions } from "../src/match.ts";
+import { isAmazonishTransaction, matchTransactions } from "../src/match.ts";
 import type { AmazonOrder, AmazonPaymentTransaction, YnabTransaction } from "../src/types.ts";
 
 const transaction: YnabTransaction = {
@@ -139,5 +139,70 @@ describe("matchTransactions", () => {
     expect(result.best?.amountSource).toBe("payment_transaction");
     expect(result.best?.order.orderNumber).toBe("555-6666666-7777777");
     expect(result.best?.reasons[0]).toContain("refund");
+  });
+});
+
+describe("date limits", () => {
+  test("ignores an old order and an old payments entry with the same amount", () => {
+    const old = order({ orderNumber: "111-0000000-0000001", orderDate: "2025-11-02", chargeAmountsCents: [2379] });
+    const oldPay = payment({ orderNumber: "111-0000000-0000001", transactionDate: "2025-11-03" });
+    const [m] = matchTransactions([transaction], [old], [oldPay]);
+    expect(m.best).toBeNull();
+  });
+  test("a charge 20 days after the order is only a weak match", () => {
+    const late = order({ orderDate: "2026-03-20", chargeAmountsCents: [2379] });
+    const [m] = matchTransactions([transaction], [late], []);
+    expect(m.best?.confidence).toBe("weak");
+  });
+  test("prefers the recent order over an old one with the same amount", () => {
+    const old = order({ orderNumber: "111-0000000-0000001", orderDate: "2026-01-05" });
+    const recent = order({ orderNumber: "111-0000000-0000002", orderDate: "2026-04-08" });
+    const [m] = matchTransactions([transaction], [old, recent], []);
+    expect(m.best?.order.orderNumber).toBe("111-0000000-0000002");
+    expect(m.ambiguous).toBe(false);
+  });
+});
+
+describe("ambiguity", () => {
+  test("two payments-page entries for the same order are not ambiguous", () => {
+    const first = payment({ transactionDate: "2026-04-09" });
+    const second = payment({ transactionDate: "2026-04-08" });
+    const [m] = matchTransactions([transaction], [], [first, second]);
+    expect(m.candidates.length).toBe(2);
+    expect(m.ambiguous).toBe(false);
+  });
+  test("payments without order numbers are still treated as different purchases", () => {
+    const first = payment({ orderNumber: null, transactionDate: "2026-04-09" });
+    const second = payment({ orderNumber: null, transactionDate: "2026-04-08" });
+    const [m] = matchTransactions([transaction], [], [first, second]);
+    expect(m.ambiguous).toBe(true);
+  });
+  test("two different orders with the same amount are still ambiguous", () => {
+    const first = payment({ orderNumber: "111-0000000-0000001" });
+    const second = payment({ orderNumber: "111-0000000-0000002" });
+    const [m] = matchTransactions([transaction], [], [first, second]);
+    expect(m.ambiguous).toBe(true);
+  });
+});
+
+describe("isAmazonishTransaction", () => {
+  test("recognises bank-style AMZN payees", () => {
+    const amzn: YnabTransaction = {
+      ...transaction,
+      payeeName: "AMZN Mktp US*1A2B3",
+      importPayeeName: "AMZN Mktp US*1A2B3",
+      importPayeeNameOriginal: "AMZN Mktp US*1A2B3",
+    };
+    expect(isAmazonishTransaction(amzn)).toBe(true);
+  });
+  test("ignores unrelated payees and transfers", () => {
+    const other: YnabTransaction = {
+      ...transaction,
+      payeeName: "Kroger",
+      importPayeeName: "KROGER #123",
+      importPayeeNameOriginal: "KROGER #123",
+    };
+    expect(isAmazonishTransaction(other)).toBe(false);
+    expect(isAmazonishTransaction({ ...transaction, transferAccountId: "acct-2" })).toBe(false);
   });
 });

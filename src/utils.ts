@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 
 export function slugify(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -83,4 +83,51 @@ export function looksLikeUrl(value: string): boolean {
 
 export async function ensureDir(path: string): Promise<void> {
   await mkdir(path, { recursive: true });
+}
+
+// Writes a file so a crash or a second process can never leave it half-written: the text goes to a
+// temporary file first and is then renamed over the real one. Windows can briefly refuse the rename
+// while an antivirus scan or another program has the old file open, so it retries a few times.
+export async function writeFileAtomic(path: string, contents: string): Promise<void> {
+  const temp = `${path}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(temp, contents, "utf8");
+
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rename(temp, path);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (attempt < 5 && (code === "EPERM" || code === "EBUSY" || code === "EACCES")) {
+        await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+        continue;
+      }
+      await unlink(temp).catch(() => {});
+      throw error;
+    }
+  }
+}
+
+// Reads a JSON file. A missing file gives null. A file that exists but isn't valid JSON is renamed to
+// "<name>.corrupt-<timestamp>" (so nothing is lost) and also gives null. Any other read problem is
+// thrown, because treating "couldn't read it" as "empty" is how a later save wipes good data.
+export async function readJsonFile<T>(path: string): Promise<T | null> {
+  let contents: string;
+  try {
+    contents = await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+
+  try {
+    return JSON.parse(contents) as T;
+  } catch {
+    const saved = `${path}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    await rename(path, saved).catch(() => {});
+    console.error(`${path} could not be read as JSON. The unreadable copy was kept as ${saved}.`);
+    return null;
+  }
 }

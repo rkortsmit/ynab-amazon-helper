@@ -1,4 +1,3 @@
-import { readFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { AppConfig } from "./config.ts";
@@ -11,7 +10,7 @@ import type {
   ManualOverrideRule,
   TransactionMatch,
 } from "./types.ts";
-import { normalizeText, normalizeTitle } from "./utils.ts";
+import { normalizeText, normalizeTitle, readJsonFile, writeFileAtomic } from "./utils.ts";
 
 function memoryPath(config: AppConfig): string {
   return join(config.dataDir, "category-memory.json");
@@ -45,16 +44,11 @@ function emptyMemoryStore(): MemoryStore {
 }
 
 export async function readMemory(config: AppConfig): Promise<MemoryStore | null> {
-  try {
-    const contents = await readFile(memoryPath(config), "utf8");
-    return JSON.parse(contents) as MemoryStore;
-  } catch {
-    return null;
-  }
+  return readJsonFile<MemoryStore>(memoryPath(config));
 }
 
 export async function writeMemory(config: AppConfig, memory: MemoryStore): Promise<void> {
-  await writeFile(memoryPath(config), `${JSON.stringify(memory, null, 2)}\n`, "utf8");
+  await writeFileAtomic(memoryPath(config), `${JSON.stringify(memory, null, 2)}\n`);
 }
 
 export function fingerprintOrder(candidate: MatchCandidate | null): string | null {
@@ -253,6 +247,10 @@ export async function addOverrideRule(
 ): Promise<ManualOverrideRule> {
   const memory = (await readMemory(config)) ?? emptyMemoryStore();
   const normalizedMatch = normalizeOverrideMatch(input.type, input.match);
+  // An empty "contains" rule would match every item, and an empty exact rule can never match.
+  if (!normalizedMatch) {
+    throw new Error("The text to match can't be empty.");
+  }
   const collection = overridesForType(memory, input.type);
   const existing = collection.find(
     (rule) => rule.normalizedMatch === normalizedMatch && rule.categoryId === input.categoryId,

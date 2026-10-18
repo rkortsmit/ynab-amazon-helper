@@ -585,9 +585,27 @@ export async function syncAmazonOrders(config: AppConfig, options: SyncOptions):
     console.log(`Found ${detailUrls.length} order detail pages for profile "${options.profile}".`);
 
     const orders: AmazonOrder[] = [];
+    let failed = 0;
     for (const [index, detailUrl] of detailUrls.entries()) {
       console.log(`Scraping ${index + 1}/${detailUrls.length}`);
-      orders.push(await scrapeOrder(page, detailUrl, options.profile, options.marketplace));
+      try {
+        orders.push(await scrapeOrder(page, detailUrl, options.profile, options.marketplace));
+      } catch (error) {
+        // If the browser window itself was closed there is nothing left to scrape, so stop. Otherwise
+        // one slow or odd order page shouldn't throw away everything read so far.
+        if (page.isClosed() || context.pages().length === 0) {
+          throw error;
+        }
+        failed += 1;
+        console.log(`  Skipped this order (${error instanceof Error ? error.message.split("\n")[0] : String(error)}): ${detailUrl}`);
+      }
+    }
+
+    if (failed > 0) {
+      console.log(`${failed} order page(s) could not be read and were skipped. Run the sync again to retry them.`);
+    }
+    if (orders.length === 0 && failed > 0) {
+      throw new Error("None of the order pages could be read.");
     }
 
     return orders;
