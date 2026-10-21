@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readProfileOrders, writeProfileOrders } from "../src/cache.ts";
+import { readProfileOrders, readProfilePaymentTransactions, writeProfileOrders, writeProfilePaymentTransactions } from "../src/cache.ts";
 import type { AppConfig } from "../src/config.ts";
 import { addOverrideRule, readMemory } from "../src/memory.ts";
-import type { AmazonOrder } from "../src/types.ts";
+import type { AmazonOrder, AmazonPaymentTransaction } from "../src/types.ts";
 import { readJsonFile, writeFileAtomic } from "../src/utils.ts";
 
 let dir: string;
@@ -33,6 +33,24 @@ function order(orderNumber: string): AmazonOrder {
     paymentLast4: [],
     rawPreview: "",
     scrapedAt: "2026-04-10T00:00:00.000Z",
+  };
+}
+
+function payment(overrides: Partial<AmazonPaymentTransaction>): AmazonPaymentTransaction {
+  return {
+    profile: "you",
+    marketplace: "https://www.amazon.com",
+    transactionDate: "2026-10-10",
+    transactionStatus: "completed",
+    paymentInstrument: "Prime Visa ****9178",
+    paymentLast4: "9178",
+    amountCents: -4279,
+    orderNumber: "111-3288478-5597843",
+    merchant: "AMZN Mktp US",
+    kind: "charge",
+    rawPreview: "",
+    scrapedAt: "2026-10-11T00:00:00.000Z",
+    ...overrides,
   };
 }
 
@@ -90,5 +108,29 @@ describe("caches and memory", () => {
     await expect(addOverrideRule(config, { ...base, type: "exact_item", match: "!!!" })).rejects.toThrow();
     const rule = await addOverrideRule(config, { ...base, type: "contains_title", match: "Paper Towels" });
     expect(rule.normalizedMatch).toBe("paper towels");
+  });
+});
+
+describe("payments cache", () => {
+  test("the same charge worded differently by two page layouts is saved once", async () => {
+    await writeProfilePaymentTransactions(config, "you", "https://www.amazon.com", [payment({})]);
+    const summary = await writeProfilePaymentTransactions(config, "you", "https://www.amazon.com", [
+      payment({ paymentInstrument: "Prime Visa\u2022\u2022\u2022\u20229178", scrapedAt: "2026-10-21T00:00:00.000Z" }),
+    ]);
+
+    expect(summary).toMatchObject({ total: 1, added: 0, updated: 1 });
+    const saved = await readProfilePaymentTransactions(config, "you");
+    expect(saved).toHaveLength(1);
+    expect(saved[0].scrapedAt).toBe("2026-10-21T00:00:00.000Z");
+  });
+
+  test("charges that differ in card or amount stay separate", async () => {
+    const summary = await writeProfilePaymentTransactions(config, "you", "https://www.amazon.com", [
+      payment({}),
+      payment({ paymentLast4: null, paymentInstrument: "Amazon Chase Co-Branded Credit Card Rewards" }),
+      payment({ amountCents: -100 }),
+    ]);
+
+    expect(summary.total).toBe(3);
   });
 });

@@ -41,8 +41,31 @@ function paymentsTransactionsUrl(marketplace: string): string {
   return new URL("/cpe/yourpayments/transactions", marketplace).toString();
 }
 
+// Text of the page plus any frames inside it. Some Amazon page layouts draw their content inside
+// an iframe, which a plain body read of the outer page cannot see.
 async function pageText(page: Page): Promise<string> {
-  return page.locator("body").innerText().catch(() => "");
+  const parts: string[] = [];
+  for (const frame of page.frames()) {
+    const text = await frame.locator("body").innerText({ timeout: 5_000 }).catch(() => "");
+    if (text.trim()) {
+      parts.push(text);
+    }
+  }
+  return parts.join("\n");
+}
+
+// Amazon draws these pages with scripts after the first load event, so reading the text straight
+// after navigation can find an empty or half-built page and wrongly ask you to fix it by hand.
+// Wait for the page to finish loading and show real content before deciding what it is.
+async function settlePage(page: Page): Promise<void> {
+  await page.waitForLoadState("load", { timeout: 15_000 }).catch(() => {});
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if ((await pageText(page)).trim().length > 300) {
+      return;
+    }
+    await page.waitForTimeout(500);
+  }
 }
 
 async function waitForManualFix(page: Page, message: string, targetUrl: string): Promise<void> {
@@ -56,6 +79,7 @@ async function ensureOrderHistoryPage(page: Page, marketplace: string): Promise<
   const targetUrl = orderHistoryUrl(marketplace);
 
   for (let attempt = 0; attempt < 4; attempt += 1) {
+    await settlePage(page);
     const currentText = await pageText(page);
     const currentUrl = page.url();
     const hasLinks = (await page.locator('a[href*="/gp/your-account/order-details"]').count()) > 0;
@@ -96,6 +120,7 @@ async function ensurePaymentsTransactionsPage(page: Page, marketplace: string): 
   const targetUrl = paymentsTransactionsUrl(marketplace);
 
   for (let attempt = 0; attempt < 4; attempt += 1) {
+    await settlePage(page);
     const currentText = await pageText(page);
     const currentUrl = page.url();
 
@@ -121,6 +146,9 @@ async function ensurePaymentsTransactionsPage(page: Page, marketplace: string): 
       continue;
     }
 
+    console.log(
+      `(Diagnostic: address ${currentUrl}; ${page.frames().length} frame(s); ${currentText.trim().length} characters of text read; ${page.context().pages().length} open tab(s).)`,
+    );
     await waitForManualFix(
       page,
       "The payments transaction page was not detected automatically. In the browser, navigate to Your Payments > Transactions, then come back here.",
@@ -276,6 +304,73 @@ export function parsePaymentsTransactionsText(input: {
       continue;
     }
 
+    // Newer layout: every charge is one block of lines, starting with "Oct 19, 2026·AMZN Mktp US",
+    // then the card, the order number, the amount and a status word such as "Charged" or "Refunded".
+    const combinedHeading = line.match(/^([A-Z][a-z]{2,8} \d{1,2}, \d{4})\s*[\u00b7\u2022]\s*(.+)$/);
+    if (combinedHeading) {
+      const rowDate = parseUsDateToIso(combinedHeading[1]);
+      let cursor = index + 1;
+      let instrument: string | null = null;
+      if (cursor < lines.length && !extractOrderNumber(lines[cursor]) && !isAmountLine(lines[cursor])) {
+        instrument = lines[cursor];
+        cursor += 1;
+      }
+
+      let orderNumber: string | null = null;
+      while (cursor < lines.length && extractOrderNumber(lines[cursor])) {
+        orderNumber = extractOrderNumber(lines[cursor]);
+        cursor += 1;
+      }
+
+      const amountCents = isAmountLine(lines[cursor] ?? "") ? parseMoneyToCents(lines[cursor]) : null;
+      if (!rowDate || amountCents === null) {
+        // Not a block we understand; skip just the heading line and keep going.
+        continue;
+      }
+      cursor += 1;
+
+      let transactionStatus: AmazonPaymentTransaction["transactionStatus"] = currentSection;
+      const statusLine = lines[cursor] ?? "";
+      if (/^(charged|refunded|completed|paid)$/i.test(statusLine)) {
+        transactionStatus = "completed";
+        cursor += 1;
+      } else if (/^pending$/i.test(statusLine)) {
+        transactionStatus = "pending";
+        cursor += 1;
+      } else if (/^in progress$/i.test(statusLine)) {
+        transactionStatus = "in_progress";
+        cursor += 1;
+      }
+
+      const merchant = combinedHeading[2].trim() || null;
+      const paymentLast4 = instrument?.match(/(\d{4})(?!.*\d)/)?.[1] ?? null;
+      const kind: AmazonPaymentTransaction["kind"] =
+        amountCents > 0 || /^refunded$/i.test(statusLine) ? "refund" : amountCents < 0 ? "charge" : "other";
+      const rawPreview = lines.slice(index, Math.min(lines.length, cursor)).join(" | ").slice(0, 400);
+      const key = [rowDate, amountCents, orderNumber ?? "", instrument ?? "", merchant ?? "", transactionStatus].join("::");
+
+      if (!seen.has(key)) {
+        seen.add(key);
+        transactions.push({
+          profile: input.profile,
+          marketplace: input.marketplace,
+          transactionDate: rowDate,
+          transactionStatus,
+          paymentInstrument: instrument,
+          paymentLast4,
+          amountCents,
+          orderNumber,
+          merchant,
+          kind,
+          rawPreview,
+          scrapedAt: input.scrapedAt ?? new Date().toISOString(),
+        });
+      }
+
+      index = Math.max(index, cursor - 1);
+      continue;
+    }
+
     if (isDateHeading(line)) {
       currentDate = parseUsDateToIso(line);
       continue;
@@ -350,6 +445,32 @@ export function parsePaymentsTransactionsText(input: {
   }
 
   return transactions;
+}
+
+async function savePaymentsPageDump(
+  config: AppConfig,
+  page: Page,
+  profile: string,
+  pageNumber: number,
+  text: string,
+): Promise<string | null> {
+  try {
+    const debugDir = join(config.dataDir, "debug");
+    await ensureDir(debugDir);
+    const safeProfile = profile.replace(/[^A-Za-z0-9_-]/g, "_");
+    const file = join(debugDir, `last-payments-page-${safeProfile}.txt`);
+    const header = [
+      `Saved: ${new Date().toISOString()}`,
+      `Profile: ${profile}  Page: ${pageNumber}`,
+      `Address: ${page.url()}`,
+      ...page.frames().map((frame, index) => `Frame ${index}: ${frame.url()}`),
+      "----- text as read by the sync (what the reader sees) -----",
+    ].join("\n");
+    await writeFile(file, `${header}\n${text}\n`, "utf8");
+    return file;
+  } catch {
+    return null;
+  }
 }
 
 async function scrapeOrder(page: Page, detailUrl: string, profile: string, marketplace: string): Promise<AmazonOrder> {
@@ -638,14 +759,24 @@ export async function syncAmazonPaymentTransactions(
       await page.waitForTimeout(1_500);
       const text = await pageText(page);
       const scrapedAt = new Date().toISOString();
-      transactions.push(
-        ...parsePaymentsTransactionsText({
-          profile: options.profile,
-          marketplace: options.marketplace,
-          text,
-          scrapedAt,
-        }),
-      );
+      const rows = parsePaymentsTransactionsText({
+        profile: options.profile,
+        marketplace: options.marketplace,
+        text,
+        scrapedAt,
+      });
+      transactions.push(...rows);
+
+      // Keep a copy of what was read so a page layout the reader doesn't understand can be fixed,
+      // and say so out loud instead of quietly saving nothing.
+      if (index === 0 || rows.length === 0) {
+        const savedTo = await savePaymentsPageDump(config, page, options.profile, index + 1, text);
+        if (rows.length === 0) {
+          console.log(
+            `  Page ${index + 1}: the page was read but no charges were recognized in it.${savedTo ? ` A copy of what was read was saved to ${savedTo}` : ""}`,
+          );
+        }
+      }
 
       const hasNextPage = await goToNextPaymentsPage(page);
       if (!hasNextPage || index === options.pages - 1) {

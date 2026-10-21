@@ -80,3 +80,77 @@ describe("parsePaymentsTransactionsText", () => {
     });
   });
 });
+
+// Layout used by newer Your Payments pages: one block per charge, date and merchant on one line.
+const newLayoutPage = `
+Skip to
+Main content
+View gift card activity to see gift card refunds.
+Oct 19, 2026\u00b7AMZN Mktp US
+Prime Visa\u2022\u2022\u2022\u20229999
+Order #111-0000001-0000001
+-$36.35
+Charged
+Oct 09, 2026\u00b7Amazon.com
+Amazon Chase Co-Branded Credit Card Rewards
+Order #111-0000002-0000002
+-$3.32
+Charged
+Oct 03, 2026\u00b7AMZN Mktp US
+Prime Visa\u2022\u2022\u2022\u20229999
+Order #111-0000003-0000003
++$28.88
+Refunded
+Sep 26, 2026\u00b7AMZN Mktp US
+Prime Visa\u2022\u2022\u2022\u20229999
+Order #111-0000004-0000004
+-$9.62
+Pending
+Back to top
+Get to Know Us
+Oct 01, 2026\u00b7AMZN Mktp US
+Prime Visa\u2022\u2022\u2022\u20229999
+Order #111-0000005-0000005
+-$1.00
+Charged
+`;
+
+describe("parsePaymentsTransactionsText (newer layout)", () => {
+  const transactions = parsePaymentsTransactionsText({
+    profile: "primary",
+    marketplace: "https://www.amazon.com",
+    text: newLayoutPage,
+    scrapedAt: "2026-10-19T00:00:00.000Z",
+  });
+
+  test("reads one charge per block and stops at the page footer", () => {
+    expect(transactions).toHaveLength(4);
+  });
+
+  test("reads the date, merchant, card, order number and amount", () => {
+    expect(transactions[0]).toMatchObject({
+      transactionDate: "2026-10-19",
+      transactionStatus: "completed",
+      paymentLast4: "9999",
+      amountCents: -3635,
+      orderNumber: "111-0000001-0000001",
+      merchant: "AMZN Mktp US",
+      kind: "charge",
+    });
+  });
+
+  test("handles zero-padded days and rewards-card rows without a card number", () => {
+    expect(transactions[1]).toMatchObject({
+      transactionDate: "2026-10-09",
+      paymentInstrument: "Amazon Chase Co-Branded Credit Card Rewards",
+      paymentLast4: null,
+      amountCents: -332,
+      merchant: "Amazon.com",
+    });
+  });
+
+  test("treats a refunded row as a refund and a pending row as pending", () => {
+    expect(transactions[2]).toMatchObject({ amountCents: 2888, kind: "refund", transactionStatus: "completed" });
+    expect(transactions[3]).toMatchObject({ amountCents: -962, kind: "charge", transactionStatus: "pending" });
+  });
+});

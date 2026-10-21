@@ -83,7 +83,9 @@ function paymentCacheKey(transaction: AmazonPaymentTransaction): string {
     transaction.orderNumber ?? "(no-order)",
     transaction.transactionDate ?? "(no-date)",
     String(transaction.amountCents),
-    transaction.paymentInstrument ?? "(no-instrument)",
+    // The card's last four digits, not the card text: Amazon words and punctuates that text differently
+    // from one page layout to the next, which would otherwise save the same charge twice.
+    transaction.paymentLast4 ?? "(no-card)",
     transaction.transactionStatus,
   ].join("::");
 }
