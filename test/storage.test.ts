@@ -42,10 +42,10 @@ function payment(overrides: Partial<AmazonPaymentTransaction>): AmazonPaymentTra
     marketplace: "https://www.amazon.com",
     transactionDate: "2026-10-10",
     transactionStatus: "completed",
-    paymentInstrument: "Prime Visa ****9178",
-    paymentLast4: "9178",
+    paymentInstrument: "Prime Visa ****4242",
+    paymentLast4: "4242",
     amountCents: -4279,
-    orderNumber: "111-3288478-5597843",
+    orderNumber: "111-0000006-0000006",
     merchant: "AMZN Mktp US",
     kind: "charge",
     rawPreview: "",
@@ -115,7 +115,7 @@ describe("payments cache", () => {
   test("the same charge worded differently by two page layouts is saved once", async () => {
     await writeProfilePaymentTransactions(config, "you", "https://www.amazon.com", [payment({})]);
     const summary = await writeProfilePaymentTransactions(config, "you", "https://www.amazon.com", [
-      payment({ paymentInstrument: "Prime Visa\u2022\u2022\u2022\u20229178", scrapedAt: "2026-10-21T00:00:00.000Z" }),
+      payment({ paymentInstrument: "Prime Visa\u2022\u2022\u2022\u20224242", scrapedAt: "2026-10-21T00:00:00.000Z" }),
     ]);
 
     expect(summary).toMatchObject({ total: 1, added: 0, updated: 1 });
